@@ -32,7 +32,7 @@ export function createApp(): OpenAPIHono<AppBindings> {
 
   app.use("*", requestId());
   app.use("*", requestLogger());
-  app.use("*", secureHeaders());
+  app.use("*", secureHeaders({ crossOriginResourcePolicy: "cross-origin" }));
   app.use("*", corsMiddleware());
   app.use("*", originGuard());
 
