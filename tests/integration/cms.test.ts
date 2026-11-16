@@ -536,7 +536,6 @@ describe("cms", () => {
   });
 
   it("blocks creators without CMS access from managing account workspaces", async () => {
-    const client = await adminClient();
     const target = await createAccount({ email: "anggota@example.test" });
 
     const creator = createClient();
