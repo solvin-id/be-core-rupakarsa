@@ -47,6 +47,11 @@ export async function writeSetting(db: DbHandle, key: string, value: unknown): P
     .onConflictDoUpdate({ target: appSettings.key, set: { value, updatedAt: new Date() } });
 }
 
+/** Seeds a default without clobbering a value an operator already saved through the CMS. */
+export async function ensureSetting(db: DbHandle, key: string, value: unknown): Promise<void> {
+  await db.insert(appSettings).values({ key, value }).onConflictDoNothing({ target: appSettings.key });
+}
+
 export async function getPricing(db: DbHandle): Promise<Pricing> {
   return { ...DEFAULT_PRICING, ...(await readSetting<Pricing>(db, SETTING_KEYS.pricing, DEFAULT_PRICING)) };
 }

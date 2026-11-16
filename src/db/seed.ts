@@ -23,7 +23,7 @@ import {
   DEFAULT_CONTACT,
   DEFAULT_PRICING,
   SETTING_KEYS,
-  writeSetting,
+  ensureSetting,
 } from "../services/settings.js";
 
 const IDS = {
@@ -64,8 +64,8 @@ const PROVIDERS: ProviderSeed[] = [
 ];
 
 export async function seedPlatform(tx: Tx): Promise<void> {
-  await writeSetting(tx, SETTING_KEYS.contact, DEFAULT_CONTACT);
-  await writeSetting(tx, SETTING_KEYS.pricing, DEFAULT_PRICING);
+  await ensureSetting(tx, SETTING_KEYS.contact, DEFAULT_CONTACT);
+  await ensureSetting(tx, SETTING_KEYS.pricing, DEFAULT_PRICING);
 
   for (const provider of PROVIDERS) {
     await tx
