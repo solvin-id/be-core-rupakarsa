@@ -6,6 +6,7 @@ import { users, workspaceMemberships } from "../db/schema.js";
 import type { WorkspaceMembershipRow } from "../db/schema.js";
 import { forbidden, unauthorized } from "../http/errors.js";
 import type { AppBindings } from "../http/types.js";
+import { getSecuritySettings } from "../services/settings.js";
 import { readSession, touchSession } from "./session.js";
 
 export function sessionGuard(): MiddlewareHandler<AppBindings> {
@@ -30,6 +31,11 @@ export function requireCms(): MiddlewareHandler<AppBindings> {
     const auth = c.get("auth");
     const allowed = auth.user.role === "SUPERADMIN" || auth.user.cmsAccess;
     if (!allowed) throw forbidden("Akun ini tidak memiliki akses CMS.");
+
+    const security = await getSecuritySettings(db);
+    if (security.requireTotpForCms && !auth.user.totpEnabled) {
+      throw forbidden("Aktifkan 2FA terlebih dahulu di Creator → Keamanan.");
+    }
     await next();
   };
 }

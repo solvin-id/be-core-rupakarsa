@@ -4,11 +4,14 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 
 import { requireCms, sessionGuard } from "../../auth/middleware.js";
+import { assertPasswordPolicy } from "../../auth/password-policy.js";
 import { hashPassword } from "../../auth/password.js";
 import { destroyUserSessions } from "../../auth/session.js";
 import { db } from "../../db/client.js";
 import { users, workspaceMemberships, workspaces } from "../../db/schema.js";
+import { env } from "../../env.js";
 import { conflict, notFound, validation } from "../../http/errors.js";
+import { clientIp } from "../../http/middleware.js";
 import { defaultHook } from "../../http/route-helpers.js";
 import { toMembership, toUser } from "../../http/serialize.js";
 import {
@@ -19,6 +22,8 @@ import {
   WorkspaceMembershipSchema,
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
+import { logAudit } from "../../services/audit-service.js";
+import { queueMail } from "../../services/mail-service.js";
 import { slugify } from "../../services/slug.js";
 import { membershipCount, relocateDefaultWorkspace } from "../../services/workspace-service.js";
 
@@ -74,6 +79,7 @@ const createAccountRoute = createRoute({
             cmsAccess: z.boolean().default(false),
             workspaceMode: z.enum(["PERSONAL", "EXISTING"]).default("PERSONAL"),
             workspaceIds: z.array(z.string().uuid()).default([]),
+            password: z.string().optional(),
           }),
         },
       },
@@ -90,6 +96,7 @@ const createAccountRoute = createRoute({
 });
 
 cmsAccountRoutes.openapi(createAccountRoute, async (c) => {
+  const auth = c.get("auth");
   const body = c.req.valid("json");
   const fullName = body.fullName.trim();
   if (fullName.length < 2) throw validation("Nama akun minimal 2 karakter.");
@@ -107,9 +114,13 @@ cmsAccountRoutes.openapi(createAccountRoute, async (c) => {
   }
   if (body.workspaceMode === "EXISTING") await assertActiveWorkspaces(ids);
 
-  const temporaryPassword = Buffer.from(randomUUID().replace(/-/g, ""), "hex")
-    .toString("base64url")
-    .slice(0, 16);
+  const customPassword = body.password?.trim() ?? "";
+  if (customPassword.length > 0) assertPasswordPolicy(customPassword);
+
+  const temporaryPassword =
+    customPassword.length > 0
+      ? customPassword
+      : Buffer.from(randomUUID().replace(/-/g, ""), "hex").toString("base64url").slice(0, 16);
   const passwordHash = await hashPassword(temporaryPassword);
 
   const created = await db.transaction(async (tx) => {
@@ -168,6 +179,26 @@ cmsAccountRoutes.openapi(createAccountRoute, async (c) => {
       .values({ workspaceId: workspace.id, userId: account.id, role: "OWNER" });
 
     return account;
+  });
+
+  await queueMail({
+    to: created.email,
+    template: "ACCOUNT_CREATED",
+    data: {
+      fullName: created.fullName,
+      email: created.email,
+      password: temporaryPassword,
+      loginUrl: `${env.PUBLIC_CREATOR_URL}/login`,
+    },
+  });
+
+  await logAudit(db, {
+    actorUserId: auth.user.id,
+    action: "account.create",
+    targetType: "user",
+    targetId: created.id,
+    metadata: { email: created.email, role: created.role, workspaceMode: body.workspaceMode },
+    ip: clientIp(c),
   });
 
   return c.json({ account: toUser(created), temporaryPassword }, 201);
