@@ -30,7 +30,7 @@ for pair in \
 done
 if [ -f "$STAGE/deploy/sudoers-rupakarsa-ci" ] && ! cmp -s "$STAGE/deploy/sudoers-rupakarsa-ci" /etc/sudoers.d/rupakarsa-ci; then
   install -o root -g root -m 440 "$STAGE/deploy/sudoers-rupakarsa-ci" /etc/sudoers.d/rupakarsa-ci
-  visudo -c >/dev/null
+  visudo -cf /etc/sudoers.d/rupakarsa-ci >/dev/null
 fi
 if [ -f "$STAGE/deploy/rupakarsa-ci-deploy" ] && ! cmp -s "$STAGE/deploy/rupakarsa-ci-deploy" "$SELF"; then
   install -o root -g root -m 755 "$STAGE/deploy/rupakarsa-ci-deploy" "$SELF"
