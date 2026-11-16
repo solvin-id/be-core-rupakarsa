@@ -15,6 +15,13 @@
       "when": 1794838299351,
       "tag": "0001_dashing_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794847213243,
+      "tag": "0002_worried_rictor",
+      "breakpoints": true
     }
   ]
 }

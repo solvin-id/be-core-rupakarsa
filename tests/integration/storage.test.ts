@@ -97,6 +97,7 @@ describe("storage", () => {
             publicBaseUrl: "",
             forcePathStyle: true,
           },
+          gdrive: { clientId: "" },
         }),
       },
     );
@@ -123,6 +124,7 @@ describe("storage", () => {
           publicBaseUrl: "",
           forcePathStyle: true,
         },
+        gdrive: { clientId: "" },
       }),
     });
     expect(badS3.status).toBe(400);
@@ -281,31 +283,5 @@ describe("storage", () => {
 
     const grid = await ownerClient.json<{ items: StorageItemBody[] }>("/api/creator/storage");
     expect(grid.body.items.find((item) => item.id === assetId)).toBeUndefined();
-  });
-
-  it("refuses to connect Google Drive with an unparsable service account", async () => {
-    const account = await createAccount({ email: "drive@example.test" });
-    const client = createClient();
-    await login(client, "drive@example.test");
-
-    const status = await client.json<{ connected: boolean }>(
-      `/api/creator/workspaces/${account.workspace.id}/storage/drive`,
-    );
-    expect(status.body.connected).toBe(false);
-
-    const rejected = await client.json<{ error: { message: string } }>(
-      `/api/creator/workspaces/${account.workspace.id}/storage/drive`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          serviceAccountEmail: "svc@project.iam.gserviceaccount.com",
-          privateKey: "not json",
-          folderId: "folder-1",
-        }),
-      },
-    );
-    expect(rejected.status).toBe(400);
-    expect(rejected.body.error.message).toBe("Isi JSON service account tidak valid.");
   });
 });

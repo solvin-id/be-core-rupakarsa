@@ -44,10 +44,16 @@ export interface S3Settings {
   forcePathStyle: boolean;
 }
 
+export interface GDriveSettings {
+  clientId: string;
+  clientSecretEncrypted: string;
+}
+
 export interface StorageSettings {
   driver: "local" | "s3";
   retentionDays: number;
   s3: S3Settings;
+  gdrive: GDriveSettings;
 }
 
 export interface MailSettings {
@@ -104,6 +110,7 @@ export const DEFAULT_STORAGE: StorageSettings = {
     publicBaseUrl: "",
     forcePathStyle: true,
   },
+  gdrive: { clientId: "", clientSecretEncrypted: "" },
 };
 
 export const DEFAULT_MAIL: MailSettings = {
@@ -167,7 +174,16 @@ async function readStorageSettings(db: DbHandle): Promise<StorageSettings> {
     ...DEFAULT_STORAGE,
     ...stored,
     s3: { ...DEFAULT_STORAGE.s3, ...(stored.s3 ?? {}) },
+    gdrive: { ...DEFAULT_STORAGE.gdrive, ...(stored.gdrive ?? {}) },
   };
+}
+
+/** The OAuth app is usable for workspace consent only once both client fields are stored. */
+export function googleOAuthConfigured(settings: StorageSettings): boolean {
+  return (
+    settings.gdrive.clientId.trim().length > 0 &&
+    settings.gdrive.clientSecretEncrypted.trim().length > 0
+  );
 }
 
 /**

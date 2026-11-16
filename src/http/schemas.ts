@@ -391,12 +391,20 @@ export const StorageSettingsSchema = z
       forcePathStyle: z.boolean(),
       secretAccessKeyMasked: z.string(),
     }),
+    gdrive: z.object({
+      clientId: z.string(),
+      clientSecretMasked: z.string(),
+      redirectUri: z.string(),
+      configured: z.boolean(),
+    }),
     workspaces: z.array(
       z.object({
         id: z.string(),
         name: z.string(),
         driveConnected: z.boolean(),
+        googleEmail: z.string(),
         folderIdMasked: z.string(),
+        folderUrl: z.string(),
         lastError: z.string().nullable(),
         connectedAt: z.string().nullable(),
       }),
@@ -448,12 +456,21 @@ export const StorageListSchema = z
 export const WorkspaceDriveSchema = z
   .object({
     connected: z.boolean(),
-    serviceAccountEmail: z.string(),
+    oauthConfigured: z.boolean(),
+    googleEmail: z.string(),
     folderId: z.string(),
+    folderName: z.string(),
+    folderUrl: z.string(),
     connectedAt: z.string().nullable(),
     lastError: z.string().nullable(),
+    defaultStorage: z.object({
+      kind: z.enum(["s3", "local"]),
+      retentionDays: z.number().int(),
+    }),
   })
   .openapi("WorkspaceDrive");
+
+export const DriveStartSchema = z.object({ url: z.string() }).openapi("DriveStart");
 
 export const MailSettingsSchema = z
   .object({

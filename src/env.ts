@@ -53,6 +53,12 @@ const rawSchema = z.object({
   HIGGSFIELD_BASE_URL: z.string().default("https://platform.higgsfield.ai"),
   HIGGSFIELD_KEY_ID: z.string().default(""),
   HIGGSFIELD_KEY_SECRET: z.string().default(""),
+  GOOGLE_OAUTH_AUTH_URL: z.string().url().default("https://accounts.google.com/o/oauth2/v2/auth"),
+  GOOGLE_OAUTH_TOKEN_URL: z.string().url().default("https://oauth2.googleapis.com/token"),
+  GOOGLE_USERINFO_URL: z.string().url().default("https://openidconnect.googleapis.com/v1/userinfo"),
+  GOOGLE_DRIVE_API_URL: z.string().url().default("https://www.googleapis.com/drive/v3"),
+  GOOGLE_DRIVE_UPLOAD_URL: z.string().url().default("https://www.googleapis.com/upload/drive/v3"),
+  GOOGLE_REVOKE_URL: z.string().url().default("https://oauth2.googleapis.com/revoke"),
 });
 
 type RawEnv = z.infer<typeof rawSchema>;

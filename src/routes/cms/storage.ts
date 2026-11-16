@@ -17,12 +17,15 @@ import {
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
 import { logAudit } from "../../services/audit-service.js";
+import { redirectUri } from "../../services/google-oauth-service.js";
 import {
   DEFAULT_STORAGE,
   SETTING_KEYS,
   getRawStorageSettings,
+  googleOAuthConfigured,
   writeSetting,
 } from "../../services/settings.js";
+import type { StorageSettings } from "../../services/settings.js";
 import { buildS3DriverFromInput, clearStorageCache, storageUsage } from "../../services/storage-service.js";
 import { LocalStorageDriver } from "../../storage/local-driver.js";
 
@@ -32,6 +35,57 @@ const errorContent = { "application/json": { schema: ErrorResponseSchema } };
 
 cmsStorageRoutes.use("/settings/storage", sessionGuard(), requireCms());
 cmsStorageRoutes.use("/settings/storage/*", sessionGuard(), requireCms());
+
+function driveRowPayload(row: (typeof workspaceStorage.$inferSelect) | undefined) {
+  const folderId = row?.folderId ?? "";
+  return {
+    driveConnected: Boolean(row && row.refreshTokenEncrypted.length > 0),
+    googleEmail: row?.googleEmail ?? "",
+    folderIdMasked: folderId ? `…${folderId.slice(-6)}` : "",
+    folderUrl: folderId ? `https://drive.google.com/drive/folders/${folderId}` : "",
+    lastError: row?.lastError ?? null,
+    connectedAt: row?.connectedAt ? row.connectedAt.toISOString() : null,
+  };
+}
+
+/** Single source for the GET and PUT body so both always describe the persisted state. */
+async function storagePayload() {
+  const settings = await getRawStorageSettings(db);
+  const workspaceRows = await db.select().from(workspaces).orderBy(workspaces.name);
+  const driveRows = await db.select().from(workspaceStorage);
+  const driveByWorkspace = new Map(driveRows.map((row) => [row.workspaceId, row]));
+
+  return {
+    driver: settings.driver,
+    retentionDays: settings.retentionDays,
+    s3: {
+      endpoint: settings.s3.endpoint,
+      region: settings.s3.region,
+      bucket: settings.s3.bucket,
+      accessKeyId: settings.s3.accessKeyId,
+      publicBaseUrl: settings.s3.publicBaseUrl,
+      forcePathStyle: settings.s3.forcePathStyle,
+      secretAccessKeyMasked:
+        settings.s3.secretAccessKeyEncrypted.length > 0
+          ? maskSecret(decryptSecret(settings.s3.secretAccessKeyEncrypted))
+          : "",
+    },
+    gdrive: {
+      clientId: settings.gdrive.clientId,
+      clientSecretMasked:
+        settings.gdrive.clientSecretEncrypted.length > 0
+          ? maskSecret(decryptSecret(settings.gdrive.clientSecretEncrypted))
+          : "",
+      redirectUri: redirectUri(),
+      configured: googleOAuthConfigured(settings),
+    },
+    workspaces: workspaceRows.map((workspace) => ({
+      id: workspace.id,
+      name: workspace.name,
+      ...driveRowPayload(driveByWorkspace.get(workspace.id)),
+    })),
+  };
+}
 
 const getRoute = createRoute({
   method: "get",
@@ -43,42 +97,7 @@ const getRoute = createRoute({
 });
 
 cmsStorageRoutes.openapi(getRoute, async (c) => {
-  const settings = await getRawStorageSettings(db);
-
-  const workspaceRows = await db.select().from(workspaces).orderBy(workspaces.name);
-  const driveRows = await db.select().from(workspaceStorage);
-  const driveByWorkspace = new Map(driveRows.map((row) => [row.workspaceId, row]));
-
-  return c.json(
-    {
-      driver: settings.driver,
-      retentionDays: settings.retentionDays,
-      s3: {
-        endpoint: settings.s3.endpoint,
-        region: settings.s3.region,
-        bucket: settings.s3.bucket,
-        accessKeyId: settings.s3.accessKeyId,
-        publicBaseUrl: settings.s3.publicBaseUrl,
-        forcePathStyle: settings.s3.forcePathStyle,
-        secretAccessKeyMasked:
-          settings.s3.secretAccessKeyEncrypted.length > 0
-            ? maskSecret(decryptSecret(settings.s3.secretAccessKeyEncrypted))
-            : "",
-      },
-      workspaces: workspaceRows.map((workspace) => {
-        const drive = driveByWorkspace.get(workspace.id);
-        return {
-          id: workspace.id,
-          name: workspace.name,
-          driveConnected: Boolean(drive && drive.privateKeyEncrypted.length > 0),
-          folderIdMasked: drive?.folderId ? `…${drive.folderId.slice(-6)}` : "",
-          lastError: drive?.lastError ?? null,
-          connectedAt: drive?.connectedAt ? drive.connectedAt.toISOString() : null,
-        };
-      }),
-    },
-    200,
-  );
+  return c.json(await storagePayload(), 200);
 });
 
 const putRoute = createRoute({
@@ -101,6 +120,10 @@ const putRoute = createRoute({
               publicBaseUrl: z.string(),
               forcePathStyle: z.boolean(),
             }),
+            gdrive: z.object({
+              clientId: z.string(),
+              clientSecret: z.string().optional(),
+            }),
           }),
         },
       },
@@ -117,7 +140,19 @@ cmsStorageRoutes.openapi(putRoute, async (c) => {
   const body = c.req.valid("json");
   const existing = await getRawStorageSettings(db);
 
-  if (body.driver === "s3") {
+  // The CMS page saves both cards through this endpoint. A card the operator did not touch must not
+  // fail validation for the other one, so the S3 requirement only applies to an actual S3 change.
+  const s3Touched =
+    body.driver !== existing.driver ||
+    body.s3.endpoint.trim() !== existing.s3.endpoint ||
+    (body.s3.region.trim() || "auto") !== existing.s3.region ||
+    body.s3.bucket.trim() !== existing.s3.bucket ||
+    body.s3.accessKeyId.trim() !== existing.s3.accessKeyId ||
+    body.s3.publicBaseUrl.trim() !== existing.s3.publicBaseUrl ||
+    body.s3.forcePathStyle !== existing.s3.forcePathStyle ||
+    Boolean(body.s3.secretAccessKey && body.s3.secretAccessKey.trim().length > 0);
+
+  if (body.driver === "s3" && s3Touched) {
     const missing = (["endpoint", "bucket", "accessKeyId"] as const).filter(
       (key) => body.s3[key].trim().length === 0,
     );
@@ -131,7 +166,16 @@ cmsStorageRoutes.openapi(putRoute, async (c) => {
       ? encryptSecret(body.s3.secretAccessKey.trim())
       : existing.s3.secretAccessKeyEncrypted;
 
-  await writeSetting(db, SETTING_KEYS.storage, {
+  const gdriveClientId = body.gdrive.clientId.trim();
+  if (gdriveClientId.length > 0 && !gdriveClientId.endsWith(".apps.googleusercontent.com")) {
+    throw validation("Client ID Google harus berakhiran .apps.googleusercontent.com.");
+  }
+  const nextGdriveSecret =
+    body.gdrive.clientSecret && body.gdrive.clientSecret.trim().length > 0
+      ? encryptSecret(body.gdrive.clientSecret.trim())
+      : existing.gdrive.clientSecretEncrypted;
+
+  const saved: StorageSettings = {
     ...DEFAULT_STORAGE,
     driver: body.driver,
     retentionDays: body.retentionDays,
@@ -144,7 +188,10 @@ cmsStorageRoutes.openapi(putRoute, async (c) => {
       publicBaseUrl: body.s3.publicBaseUrl.trim(),
       forcePathStyle: body.s3.forcePathStyle,
     },
-  });
+    gdrive: { clientId: gdriveClientId, clientSecretEncrypted: nextGdriveSecret },
+  };
+
+  await writeSetting(db, SETTING_KEYS.storage, saved);
   clearStorageCache();
 
   await logAudit(db, {
@@ -152,27 +199,16 @@ cmsStorageRoutes.openapi(putRoute, async (c) => {
     action: "settings.storage.update",
     targetType: "app_settings",
     targetId: SETTING_KEYS.storage,
-    metadata: { driver: body.driver, retentionDays: body.retentionDays, bucket: body.s3.bucket.trim() },
+    metadata: {
+      driver: body.driver,
+      retentionDays: body.retentionDays,
+      bucket: saved.s3.bucket,
+      gdriveClientId,
+    },
     ip: clientIp(c),
   });
 
-  return c.json(
-    {
-      driver: body.driver,
-      retentionDays: body.retentionDays,
-      s3: {
-        endpoint: body.s3.endpoint.trim(),
-        region: body.s3.region.trim() || "auto",
-        bucket: body.s3.bucket.trim(),
-        accessKeyId: body.s3.accessKeyId.trim(),
-        publicBaseUrl: body.s3.publicBaseUrl.trim(),
-        forcePathStyle: body.s3.forcePathStyle,
-        secretAccessKeyMasked: nextSecret.length > 0 ? maskSecret(decryptSecret(nextSecret)) : "",
-      },
-      workspaces: [],
-    },
-    200,
-  );
+  return c.json(await storagePayload(), 200);
 });
 
 const testRoute = createRoute({

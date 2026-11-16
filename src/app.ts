@@ -38,6 +38,7 @@ import { healthRoutes } from "./routes/health.js";
 import { mediaRoutes } from "./routes/media.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { publicRoutes } from "./routes/public/config.js";
+import { publicGDriveRoutes } from "./routes/public/gdrive-oauth.js";
 import { publicPaymentRoutes } from "./routes/public/midtrans.js";
 
 export function createApp(): OpenAPIHono<AppBindings> {
@@ -62,6 +63,7 @@ export function createApp(): OpenAPIHono<AppBindings> {
   app.route("/", mediaRoutes);
   app.route("/", healthRoutes);
   app.route("/", publicRoutes);
+  app.route("/", publicGDriveRoutes);
   app.route("/", publicPaymentRoutes);
   app.route("/", metricsRoutes);
 

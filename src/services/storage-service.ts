@@ -9,13 +9,11 @@ import type { MediaAssetRow } from "../db/schema.js";
 import { decryptSecret } from "../crypto/encryption.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
-import {
-  GDriveStorageDriver,
-  gdriveDownloadUrl,
-} from "../storage/gdrive-driver.js";
+import { GDriveStorageDriver, gdriveDownloadUrl } from "../storage/gdrive-driver.js";
 import { LocalStorageDriver } from "../storage/local-driver.js";
 import { createS3Storage, envS3Available, envS3Config } from "../storage/s3-driver.js";
 import { getStorageSettings } from "./settings.js";
+import { accessTokenFor } from "./workspace-drive-service.js";
 
 export type StorageKind = "local" | "s3" | "gdrive";
 
@@ -113,12 +111,11 @@ export async function resolveStorage(workspaceId: string | null): Promise<Resolv
     .where(eq(workspaceStorage.workspaceId, workspaceId))
     .limit(1);
 
-  if (row && row.privateKeyEncrypted.length > 0 && row.folderId.length > 0) {
+  if (row && row.refreshTokenEncrypted.length > 0 && row.folderId.length > 0) {
     return cacheSet(workspaceId, {
       driver: new GDriveStorageDriver({
-        serviceAccountEmail: row.serviceAccountEmail,
-        privateKey: decryptSecret(row.privateKeyEncrypted),
         folderId: row.folderId,
+        getAccessToken: () => accessTokenFor(row.workspaceId),
       }),
       kind: "gdrive",
       retentionDays: 0,

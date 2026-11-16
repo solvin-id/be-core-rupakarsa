@@ -370,9 +370,13 @@ export const workspaceStorage = pgTable("workspace_storage", {
   workspaceId: uuid("workspace_id")
     .primaryKey()
     .references(() => workspaces.id, { onDelete: "cascade" }),
-  serviceAccountEmail: text("service_account_email").notNull().default(""),
-  privateKeyEncrypted: text("private_key_encrypted").notNull().default(""),
+  googleEmail: text("google_email").notNull().default(""),
+  refreshTokenEncrypted: text("refresh_token_encrypted").notNull().default(""),
+  accessTokenEncrypted: text("access_token_encrypted").notNull().default(""),
+  accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
+  scope: text("scope").notNull().default(""),
   folderId: text("folder_id").notNull().default(""),
+  folderName: text("folder_name").notNull().default("Rupakarsa"),
   connectedByUserId: uuid("connected_by_user_id").references(() => users.id, { onDelete: "set null" }),
   connectedAt: timestamp("connected_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
