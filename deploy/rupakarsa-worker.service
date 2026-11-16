@@ -30,3 +30,6 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/var/lib/rupakarsa
+
+[Install]
+WantedBy=multi-user.target
