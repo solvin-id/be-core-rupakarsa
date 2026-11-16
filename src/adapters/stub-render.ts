@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { env } from "../env.js";
 import { AppError } from "../http/errors.js";
-import type { RenderAdapter, RenderRequest, RenderResult, StorageDriver } from "./types.js";
+import type { RenderAdapter, RenderRequest, RenderResult } from "./types.js";
 
 export const GRADIENT_VARIANTS: ReadonlyArray<readonly [string, string, string]> = [
   ["#ffd166", "#f04e23", "#7c2d12"],
@@ -94,12 +94,6 @@ ${lines
 }
 
 export class StubRenderAdapter implements RenderAdapter {
-  private readonly storage: StorageDriver;
-
-  constructor(storage: StorageDriver) {
-    this.storage = storage;
-  }
-
   async render(input: RenderRequest, signal: AbortSignal): Promise<RenderResult> {
     await wait(RENDER_DELAY_MS, signal);
 
@@ -107,11 +101,15 @@ export class StubRenderAdapter implements RenderAdapter {
       throw new AppError(502, "PROVIDER_ERROR", "Provider menolak render.");
     }
 
-    const key = `generations/${input.generationId}.svg`;
     const svg = buildPosterSvg(input.generationId, input);
-    await this.storage.put(key, Buffer.from(svg, "utf8"), "image/svg+xml");
 
-    return { outputKey: key, externalJobId: `stub_${randomBytes(4).toString("hex")}` };
+    return {
+      bytes: Buffer.from(svg, "utf8"),
+      mime: "image/svg+xml",
+      externalJobId: `stub_${randomBytes(4).toString("hex")}`,
+      width: 1280,
+      height: 720,
+    };
   }
 }
 

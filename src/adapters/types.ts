@@ -22,11 +22,17 @@ export interface RenderRequest {
   modelName: string;
   selectedParams: GenerationParams;
   simulateFailure: boolean;
+  referenceUrl?: string | null;
 }
 
 export interface RenderResult {
-  outputKey: string;
+  /** Encoded media bytes; the worker persists them through the workspace-aware storage service. */
+  bytes: Buffer;
+  mime: string;
   externalJobId: string;
+  width?: number;
+  height?: number;
+  durationSec?: number;
 }
 
 export interface StoredObject {
@@ -34,10 +40,16 @@ export interface StoredObject {
   mime: string;
 }
 
+export interface PutResult {
+  /** Provider-side identifier (S3 ETag, Drive file id). */
+  externalId?: string;
+}
+
 export interface StorageDriver {
-  put(key: string, bytes: Buffer, mime: string): Promise<void>;
+  put(key: string, bytes: Buffer, mime: string): Promise<PutResult>;
   url(key: string): string;
-  read(key: string): Promise<StoredObject | null>;
+  read(key: string, externalId?: string | null): Promise<StoredObject | null>;
+  remove(key: string, externalId?: string | null): Promise<void>;
 }
 
 export interface PlanAdapter {
@@ -48,7 +60,19 @@ export interface RenderAdapter {
   render(input: RenderRequest, signal: AbortSignal): Promise<RenderResult>;
 }
 
-export interface ProviderRegistry {
-  plan: PlanAdapter;
-  render: RenderAdapter;
+export interface ChatContentPart {
+  type: "text" | "image_url" | "video_url";
+  text?: string;
+  image_url?: { url: string };
+  video_url?: { url: string };
+}
+
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string | ChatContentPart[];
+}
+
+export interface ChatResult {
+  text: string;
+  usage: { totalTokens: number };
 }
