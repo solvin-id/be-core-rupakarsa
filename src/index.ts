@@ -20,9 +20,14 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   logger.info({ signal }, "shutting down");
 
-  await new Promise<void>((resolve) => {
+  const drained = new Promise<void>((resolve) => {
     server.close(() => resolve());
   });
+  const grace = new Promise<void>((resolve) =>
+    setTimeout(resolve, env.SHUTDOWN_GRACE_SECONDS * 1000).unref(),
+  );
+  await Promise.race([drained, grace]);
+
   await closeRateLimitRedis();
   await closeQueue();
   await closeDb();

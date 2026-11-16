@@ -10,6 +10,7 @@ import type { SessionRow } from "../db/schema.js";
 import { env } from "../env.js";
 
 export const SESSION_COOKIE = "rupakarsa_session";
+export const CSRF_COOKIE = "rupakarsa_csrf";
 const TOUCH_INTERVAL_MS = 60_000;
 
 function hashToken(token: string): string {
@@ -53,10 +54,22 @@ export function writeSessionCookie(c: Context, token: string): void {
     path: "/",
     maxAge: env.SESSION_TTL_DAYS * 24 * 60 * 60,
   });
+  setCookie(c, CSRF_COOKIE, randomBytes(18).toString("base64url"), {
+    httpOnly: false,
+    sameSite: "Lax",
+    secure: env.NODE_ENV === "production",
+    domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
+    path: "/",
+    maxAge: env.SESSION_TTL_DAYS * 24 * 60 * 60,
+  });
 }
 
 export function clearSessionCookie(c: Context): void {
   deleteCookie(c, SESSION_COOKIE, {
+    path: "/",
+    domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
+  });
+  deleteCookie(c, CSRF_COOKIE, {
     path: "/",
     domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
   });

@@ -1,8 +1,10 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
+import { getCookie } from "hono/cookie";
 import { secureHeaders } from "hono/secure-headers";
 
+import { CSRF_COOKIE, SESSION_COOKIE } from "../auth/session.js";
 import { env } from "../env.js";
 import { AppError, forbidden } from "./errors.js";
 import { logger } from "../logger.js";
@@ -57,10 +59,37 @@ export function corsMiddleware(): MiddlewareHandler<AppBindings> {
     origin: (origin) => (env.FRONTEND_ORIGINS.includes(origin) ? origin : ""),
     credentials: true,
     allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "X-Request-Id"],
+    allowHeaders: ["Content-Type", "X-Request-Id", "X-Csrf-Token"],
     exposeHeaders: ["X-Request-Id"],
     maxAge: 600,
   });
+}
+
+/**
+ * Double-submit cookie: every cookie-authenticated mutation must echo the non-httpOnly CSRF cookie
+ * in `x-csrf-token`. Requests without a session cookie (login, password reset, webhooks) pass
+ * through untouched.
+ */
+export function csrfMiddleware(): MiddlewareHandler<AppBindings> {
+  return async (c, next) => {
+    const method = c.req.method.toUpperCase();
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+      await next();
+      return;
+    }
+
+    if (!getCookie(c, SESSION_COOKIE)) {
+      await next();
+      return;
+    }
+
+    const cookieToken = getCookie(c, CSRF_COOKIE) ?? "";
+    const headerToken = c.req.header("x-csrf-token") ?? "";
+    if (cookieToken.length === 0 || headerToken !== cookieToken) {
+      throw forbidden("Token CSRF tidak valid. Muat ulang halaman.");
+    }
+    await next();
+  };
 }
 
 export const jsonBodyLimit = bodyLimit({
@@ -71,9 +100,9 @@ export const jsonBodyLimit = bodyLimit({
 });
 
 export const uploadBodyLimit = bodyLimit({
-  maxSize: 12 * 1024 * 1024,
+  maxSize: 104 * 1024 * 1024,
   onError: () => {
-    throw new AppError(413, "PAYLOAD_TOO_LARGE", "Ukuran gambar maksimal 10 MB.");
+    throw new AppError(413, "PAYLOAD_TOO_LARGE", "Berkas maksimal 100 MB.");
   },
 });
 
