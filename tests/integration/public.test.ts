@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { createRedisConnection } from "../../src/queue/generation-queue.js";
 import { createClient, resetDatabase } from "./helpers.js";
 
 describe("public endpoints", () => {
@@ -35,12 +36,16 @@ describe("public endpoints", () => {
     expect(response.body.features.simulation).toBe(true);
   });
 
-  it("reports database health", async () => {
+  it("reports database, redis, and worker health", async () => {
+    const redis = createRedisConnection();
+    await redis.set("rupakarsa:worker:heartbeat", String(Date.now()), "EX", 30);
+    await redis.quit();
+
     const client = createClient();
     const response = await client.json<{ status: string; db: boolean }>("/health");
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ status: "ok", db: true });
+    expect(response.body).toEqual({ status: "ok", db: true, redis: true, worker: true });
   });
 
   it("returns the API error envelope for unknown routes", async () => {

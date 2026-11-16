@@ -42,7 +42,8 @@ export async function resetDatabase(): Promise<void> {
     TRUNCATE TABLE
       users, workspaces, workspace_memberships, workspace_join_requests, sessions,
       folders, ai_providers, ai_models, generations, token_ledger, plan_usages,
-      media_assets, app_settings
+      media_assets, app_settings, folder_contexts, asset_analyses, generation_attachments,
+      workspace_storage, password_reset_tokens, email_outbox, orders, audit_logs
     RESTART IDENTITY CASCADE
   `);
   await db.transaction(async (tx) => seedPlatform(tx));
@@ -132,26 +133,42 @@ export async function activateWorkspace(client: TestClient, workspaceId: string)
 
 export function createClient(): TestClient {
   const app = createApp();
-  let cookie = "";
+  const jar = new Map<string, string>();
+
+  function cookieHeader(): string {
+    return [...jar.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+  }
 
   return {
     async request(path, options = {}) {
+      const method = (options.method ?? "GET").toUpperCase();
       const headers = new Headers(options.headers ?? {});
+      const cookie = cookieHeader();
       if (cookie) headers.set("cookie", cookie);
+
+      // Double-submit CSRF: mirror the readable cookie unless the caller opts out.
+      const csrf = jar.get("rupakarsa_csrf");
+      if (csrf && !headers.has("x-csrf-token") && method !== "GET" && method !== "HEAD") {
+        headers.set("x-csrf-token", csrf);
+      }
 
       const response = await app.request(path, { ...options, headers });
 
       const setCookies = response.headers.getSetCookie?.() ?? [];
       for (const raw of setCookies) {
-        const [pair] = raw.split(";");
+        const [pair, ...attributes] = raw.split(";");
         if (!pair) continue;
         const [name, ...rest] = pair.split("=");
         if (!name) continue;
-        if (raw.toLowerCase().includes("max-age=0")) {
-          cookie = "";
+        const expired = attributes.some((attribute) => {
+          const [key, value] = attribute.split("=");
+          return key?.trim().toLowerCase() === "max-age" && value?.trim() === "0";
+        });
+        if (expired) {
+          jar.delete(name.trim());
           continue;
         }
-        cookie = `${name}=${rest.join("=")}`;
+        jar.set(name.trim(), rest.join("="));
       }
 
       return response;
@@ -165,10 +182,10 @@ export function createClient(): TestClient {
       };
     },
     cookie() {
-      return cookie;
+      return cookieHeader();
     },
     clearCookie() {
-      cookie = "";
+      jar.clear();
     },
   };
 }

@@ -207,22 +207,33 @@ describe("cms", () => {
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: "hf-live-abc123" }),
+        body: JSON.stringify({ apiKey: "kid123:hf-live-abc123" }),
       },
     );
     expect(updated.status).toBe(200);
     expect(JSON.stringify(updated.body)).not.toContain("hf-live-abc123");
-    expect(updated.body.apiKeyMasked).toBe("hf-••••••••c123");
+    expect(updated.body.apiKeyMasked).toBe("kid••••••••c123");
 
     const remasked = await client.json<{ apiKeyMasked: string }>(
       `/api/cms/providers/${higgsfield?.id}`,
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: "hf-live-zzz999" }),
+        body: JSON.stringify({ apiKey: "kid123:hf-live-zzz999" }),
       },
     );
-    expect(remasked.body.apiKeyMasked).toBe("hf-••••••••z999");
+    expect(remasked.body.apiKeyMasked).toBe("kid••••••••z999");
+
+    const malformed = await client.json<{ error: { message: string } }>(
+      `/api/cms/providers/${higgsfield?.id}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ apiKey: "hf-live-nocolon" }),
+      },
+    );
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error.message).toBe("Format API key Higgsfield: key_id:key_secret.");
 
     const duplicate = await client.json<{ error: { message: string } }>(
       "/api/cms/providers",
@@ -234,8 +245,8 @@ describe("cms", () => {
         isActive: true,
       }),
     );
-    expect(duplicate.status).toBe(409);
-    expect(duplicate.body.error.message).toBe("Kode provider sudah dipakai.");
+    expect(duplicate.status).toBe(400);
+    expect(duplicate.body.error.message).toBe("Provider Higgsfield dikelola sistem.");
 
     const created = await client.json<{ id: string; code: string; apiKeyMasked: string }>(
       "/api/cms/providers",
@@ -257,7 +268,7 @@ describe("cms", () => {
     );
     expect(tested.status).toBe(200);
     expect(tested.body.ok).toBe(true);
-    expect(tested.body.message).toContain("mode simulasi");
+    expect(tested.body.message).toContain("model terdeteksi");
   });
 
   it("rejects a provider key shorter than six characters", async () => {

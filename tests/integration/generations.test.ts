@@ -22,7 +22,14 @@ interface GenerationBody {
   outputUrl: string | null;
   refunded: boolean;
   tokensCharged: number;
+  referenceImageUrl: string | null;
 }
+
+/** 1×1 transparent PNG; real magic bytes so the upload sniffer accepts it. */
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 async function setBalances(
   workspaceId: string,
@@ -61,6 +68,7 @@ describe("generation pipeline", () => {
   it("charges the free plan quota before any token", async () => {
     const { account, client } = await prepare("plan@example.test", { tokens: 50, freePlan: 1 });
     const model = await modelByCode("wan-qwen-10s");
+    const folder = await createFolder(client, "Plan Gratis");
 
     const response = await client.json<{
       blueprint: { prompt: string; direction: string; negativePrompt: string };
@@ -69,6 +77,7 @@ describe("generation pipeline", () => {
     }>(
       "/api/creator/generations/plan",
       jsonBody({
+        folderId: folder.id,
         modelId: model.id,
         rawPrompt: "Uji plan",
         durationSec: 10,
@@ -95,10 +104,12 @@ describe("generation pipeline", () => {
   it("charges one token per plan once the free quota is gone", async () => {
     const { account, client } = await prepare("plan2@example.test", { tokens: 50, freePlan: 0 });
     const model = await modelByCode("flux-image");
+    const folder = await createFolder(client, "Plan Bayar");
 
     const response = await client.json<{ cost: { tokens: number; usesFreeQuota: boolean } }>(
       "/api/creator/generations/plan",
       jsonBody({
+        folderId: folder.id,
         modelId: model.id,
         rawPrompt: "Still life rempah",
         resolution: "2k",
@@ -126,7 +137,8 @@ describe("generation pipeline", () => {
         folderId: folder.id,
         modelId: model.id,
         rawPrompt: "Uap rendang",
-        plannedPrompt: "[SUBJECT] Uap rendang",
+        planMode: false,
+        finalPrompt: "[SUBJECT] Uap rendang",
         selectedParams: { durationSec: 10, resolution: "1080p", aspectRatio: "16:9" },
       }),
     );
@@ -138,7 +150,8 @@ describe("generation pipeline", () => {
 
     const finished = await pollGeneration(client, created.body.generation.id, ["COMPLETED", "FAILED"]);
     expect(finished.status).toBe("COMPLETED");
-    expect(finished.outputUrl).toContain("/media/generations/");
+    expect(finished.outputUrl).toContain("/media/workspaces/");
+    expect(finished.outputUrl).toContain("/generations/");
 
     const balance = await balanceOf(account.workspace.id);
     expect(balance.tokens).toBe(65);
@@ -175,14 +188,17 @@ describe("generation pipeline", () => {
 
     const created = await client.json<{ generation: GenerationBody }>(
       "/api/creator/generations",
-      jsonBody({
-        folderId: folder.id,
-        modelId: model.id,
-        rawPrompt: "Uji gagal",
-        plannedPrompt: "[SUBJECT] Uji gagal",
-        selectedParams: { durationSec: 10, resolution: "1080p", aspectRatio: "16:9" },
-        simulateFailure: true,
-      }),
+      {
+        ...jsonBody({
+          folderId: folder.id,
+          modelId: model.id,
+          rawPrompt: "Uji gagal",
+          planMode: false,
+          finalPrompt: "[SUBJECT] Uji gagal",
+          selectedParams: { durationSec: 10, resolution: "1080p", aspectRatio: "16:9" },
+        }),
+        headers: { "content-type": "application/json", "x-simulate-failure": "1" },
+      },
     );
     expect(created.status).toBe(201);
     expect((await balanceOf(account.workspace.id)).tokens).toBe(45);
@@ -210,7 +226,8 @@ describe("generation pipeline", () => {
         folderId: folder.id,
         modelId: model.id,
         rawPrompt: "Mahal",
-        plannedPrompt: "[SUBJECT] Mahal",
+        planMode: false,
+        finalPrompt: "[SUBJECT] Mahal",
         selectedParams: { durationSec: 10, resolution: "1080p", aspectRatio: "16:9" },
       }),
     );
@@ -230,7 +247,8 @@ describe("generation pipeline", () => {
         folderId: folder.id,
         modelId: model.id,
         rawPrompt: "x",
-        plannedPrompt: "y",
+        planMode: false,
+        finalPrompt: "y",
         selectedParams: { durationSec: 10, resolution: "4k", aspectRatio: "16:9" },
       }),
     );
@@ -243,7 +261,8 @@ describe("generation pipeline", () => {
         folderId: folder.id,
         modelId: model.id,
         rawPrompt: "x",
-        plannedPrompt: "y",
+        planMode: false,
+        finalPrompt: "y",
         selectedParams: { resolution: "1080p", aspectRatio: "16:9" },
       }),
     );
@@ -260,7 +279,9 @@ describe("generation pipeline", () => {
     text.append("file", new File(["not an image"], "catatan.txt", { type: "text/plain" }));
     const rejectedType = await client.request("/api/creator/uploads", { method: "POST", body: text });
     expect(rejectedType.status).toBe(400);
-    expect(await readErrorMessage(rejectedType)).toBe("Format harus JPG, JPEG, PNG, atau WEBP.");
+    expect(await readErrorMessage(rejectedType)).toBe(
+      "Format harus JPG, JPEG, PNG, WEBP, MP4, atau WEBM.",
+    );
 
     const big = new FormData();
     big.append("file", new File([new Uint8Array(11 * 1024 * 1024)], "besar.png", { type: "image/png" }));
@@ -268,15 +289,32 @@ describe("generation pipeline", () => {
     expect(rejectedSize.status).toBe(400);
     expect(await readErrorMessage(rejectedSize)).toBe("Ukuran gambar maksimal 10 MB.");
 
+    const spoofed = new FormData();
+    spoofed.append("file", new File([new Uint8Array(64)], "palsu.png", { type: "image/png" }));
+    const rejectedContent = await client.request("/api/creator/uploads", { method: "POST", body: spoofed });
+    expect(rejectedContent.status).toBe(400);
+    expect(await readErrorMessage(rejectedContent)).toBe(
+      "Isi berkas tidak cocok dengan tipe yang diklaim.",
+    );
+
     const png = new FormData();
-    png.append("file", new File([new Uint8Array(64)], "kecil.png", { type: "image/png" }));
-    const uploaded = await client.json<{ url: string; mime: string; size: number }>(
+    png.append("file", new File([PNG_BYTES], "kecil.png", { type: "image/png" }));
+    const uploaded = await client.json<{ url: string; key: string; mime: string; size: number }>(
       "/api/creator/uploads",
       { method: "POST", body: png },
     );
     expect(uploaded.status).toBe(201);
     expect(uploaded.body.mime).toBe("image/png");
-    expect(uploaded.body.url).toContain("/media/uploads/");
+    expect(uploaded.body.key).toContain("/uploads/");
+    expect(uploaded.body.url).toContain("/media/");
+    expect(uploaded.body.url).toContain("sig=");
+
+    const publicPath = uploaded.body.url.split("/media/")[1] ?? "";
+    const unsigned = await client.request(`/media/${publicPath.split("?")[0]}`);
+    expect(unsigned.status).toBe(404);
+
+    const signed = await client.request(`/media/${publicPath}`);
+    expect(signed.status).toBe(200);
 
     const unknownReference = await client.json<{ error: { message: string } }>(
       "/api/creator/generations",
@@ -284,13 +322,14 @@ describe("generation pipeline", () => {
         folderId: folder.id,
         modelId: model.id,
         rawPrompt: "x",
-        plannedPrompt: "y",
-        referenceImageUrl: "http://localhost:8787/media/uploads/nobody/unknown.png",
+        planMode: false,
+        finalPrompt: "y",
+        attachmentKeys: ["workspaces/nobody/uploads/ghost.png"],
         selectedParams: { durationSec: 5, resolution: "1080p", aspectRatio: "16:9" },
       }),
     );
     expect(unknownReference.status).toBe(400);
-    expect(unknownReference.body.error.message).toBe("Gambar referensi tidak dikenal.");
+    expect(unknownReference.body.error.message).toBe("Lampiran tidak dikenal.");
 
     const withReference = await client.json<{ generation: GenerationBody }>(
       "/api/creator/generations",
@@ -298,12 +337,14 @@ describe("generation pipeline", () => {
         folderId: folder.id,
         modelId: model.id,
         rawPrompt: "x",
-        plannedPrompt: "y",
-        referenceImageUrl: uploaded.body.url,
+        planMode: false,
+        finalPrompt: "y",
+        attachmentKeys: [uploaded.body.key],
         selectedParams: { durationSec: 5, resolution: "1080p", aspectRatio: "16:9" },
       }),
     );
     expect(withReference.status).toBe(201);
+    expect(withReference.body.generation.referenceImageUrl).toBe(uploaded.body.key);
     await pollGeneration(client, withReference.body.generation.id, ["COMPLETED", "FAILED"]);
   });
 
@@ -318,7 +359,8 @@ describe("generation pipeline", () => {
         folderId: folder.id,
         modelId: model.id,
         rawPrompt: "x",
-        plannedPrompt: "y",
+        planMode: false,
+        finalPrompt: "y",
         selectedParams: { resolution: "1k", aspectRatio: "1:1" },
       }),
     );
