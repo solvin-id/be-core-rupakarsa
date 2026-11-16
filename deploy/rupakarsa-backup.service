@@ -1,0 +1,11 @@
+[Unit]
+Description=Rupakarsa database and media backup
+After=postgresql.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup-rupakarsa.sh
+User=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

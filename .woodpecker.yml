@@ -34,3 +34,15 @@ steps:
     when:
       event: [push, manual]
       branch: [master]
+
+  - name: verify
+    image: bash
+    commands:
+      - export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+      - curl -fsS -m 5 http://127.0.0.1:8787/health | tee /tmp/rk-health.json
+      - grep -q '"status":"ok"' /tmp/rk-health.json
+      - systemctl is-active rupakarsa-api.service
+      - systemctl is-active rupakarsa-worker.service
+    when:
+      event: [push, manual]
+      branch: [master]

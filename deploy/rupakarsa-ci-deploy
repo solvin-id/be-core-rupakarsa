@@ -21,13 +21,18 @@ done
 # units + sudoers + this script come from the repo; install only when they differ
 for pair in \
   "deploy/rupakarsa-api.service:/etc/systemd/system/rupakarsa-api.service" \
-  "deploy/rupakarsa-worker.service:/etc/systemd/system/rupakarsa-worker.service"; do
+  "deploy/rupakarsa-worker.service:/etc/systemd/system/rupakarsa-worker.service" \
+  "deploy/rupakarsa-backup.service:/etc/systemd/system/rupakarsa-backup.service" \
+  "deploy/rupakarsa-backup.timer:/etc/systemd/system/rupakarsa-backup.timer"; do
   src="$STAGE/${pair%%:*}"; dst="${pair##*:}"
   if [ -f "$src" ] && ! cmp -s "$src" "$dst"; then
     install -o root -g root -m 644 "$src" "$dst"
     NEED_DAEMON_RELOAD=1
   fi
 done
+if [ -f "$STAGE/deploy/backup-rupakarsa.sh" ] && ! cmp -s "$STAGE/deploy/backup-rupakarsa.sh" /usr/local/bin/backup-rupakarsa.sh; then
+  install -o root -g root -m 755 "$STAGE/deploy/backup-rupakarsa.sh" /usr/local/bin/backup-rupakarsa.sh
+fi
 if [ -f "$STAGE/deploy/sudoers-rupakarsa-ci" ] && ! cmp -s "$STAGE/deploy/sudoers-rupakarsa-ci" /etc/sudoers.d/rupakarsa-ci; then
   install -o root -g root -m 440 "$STAGE/deploy/sudoers-rupakarsa-ci" /etc/sudoers.d/rupakarsa-ci
   visudo -cf /etc/sudoers.d/rupakarsa-ci >/dev/null
@@ -40,18 +45,36 @@ if [ "${NEED_DAEMON_RELOAD:-0}" = "1" ]; then
 fi
 
 install -d -o rupakarsa -g rupakarsa "$TARGET" "$MEDIA"
-rsync -a --delete --exclude '.git' "$STAGE/" "$TARGET/"
-chown -R rupakarsa:rupakarsa "$TARGET" "$MEDIA"
-chmod -R a+rX "$TARGET"
+install -d -o root -g root -m 750 /var/backups/rupakarsa
 
+# 1) database dump before any migration touches the schema
 run_as_app() {
   sudo -u rupakarsa -- /bin/bash -c "set -a; . '$ENV_FILE'; set +a; cd '$TARGET' && exec $NODE $1"
 }
+
+if command -v pg_dump >/dev/null 2>&1; then
+  DB_URL="$(sudo -u rupakarsa -- /bin/bash -c "set -a; . '$ENV_FILE'; set +a; printf '%s' \"\$DATABASE_URL\"")"
+  if [ -n "$DB_URL" ]; then
+    pg_dump --format=custom --no-owner --dbname="$DB_URL" \
+      --file="/var/backups/rupakarsa/predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
+    ls -1t /var/backups/rupakarsa/predeploy-*.dump 2>/dev/null | tail -n +15 | xargs -r rm -f
+  fi
+fi
+
+# 2) keep the last good release for a one-command rollback (rsync back + restart)
+if [ -d "$TARGET/dist" ]; then
+  rsync -a --delete --exclude '.git' "$TARGET/" "$TARGET.previous/"
+fi
+
+rsync -a --delete --exclude '.git' "$STAGE/" "$TARGET/"
+chown -R rupakarsa:rupakarsa "$TARGET" "$MEDIA"
+chmod -R a+rX "$TARGET"
 
 run_as_app "dist/db/migrate.js"
 run_as_app "dist/db/seed.js --force --if-empty --no-demo"
 
 systemctl enable rupakarsa-api.service rupakarsa-worker.service
+systemctl enable --now rupakarsa-backup.timer
 systemctl restart rupakarsa-api.service rupakarsa-worker.service
 for _ in $(seq 1 30); do
   sleep 1
