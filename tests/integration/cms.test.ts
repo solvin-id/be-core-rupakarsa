@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -5,6 +7,7 @@ import { db } from "../../src/db/client.js";
 import { aiModels, tokenLedger, users, workspaces } from "../../src/db/schema.js";
 import { env } from "../../src/env.js";
 import {
+  addWorkspace,
   createAccount,
   createClient,
   jsonBody,
@@ -366,6 +369,185 @@ describe("cms", () => {
     );
     expect(filtered.status).toBe(200);
     expect(filtered.body).toHaveLength(0);
+  });
+
+  it("assigns a new account to existing workspaces instead of creating a personal one", async () => {
+    const client = await adminClient();
+    const owner = await createAccount({ email: "ops@example.test", fullName: "Ops Satu" });
+
+    const extra = await client.json<{ id: string }>(
+      "/api/cms/workspaces",
+      jsonBody({ name: "Klinik B2B", slug: "klinik-b2b", ownerId: owner.user.id }),
+    );
+    expect(extra.status).toBe(201);
+
+    const before = await db.select({ id: workspaces.id }).from(workspaces);
+
+    const created = await client.json<AccountBody>(
+      "/api/cms/accounts",
+      jsonBody({
+        fullName: "B2B Satu",
+        email: "b2b@example.test",
+        role: "USER",
+        cmsAccess: false,
+        workspaceMode: "EXISTING",
+        workspaceIds: [extra.body.id, owner.workspace.id],
+      }),
+    );
+    expect(created.status).toBe(201);
+
+    const after = await db.select({ id: workspaces.id }).from(workspaces);
+    expect(after).toHaveLength(before.length);
+
+    const creator = createClient();
+    const session = await creator.json<{
+      workspace: { id: string };
+      workspaces: Array<{ id: string }>;
+      memberships: Array<{ workspaceId: string; role: string }>;
+      activeWorkspaceRole: string;
+    }>("/api/creator/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "b2b@example.test",
+        password: created.body.temporaryPassword,
+      }),
+    });
+
+    expect(session.status).toBe(200);
+    expect(session.body.workspace.id).toBe(extra.body.id);
+    expect(session.body.workspaces).toHaveLength(2);
+    expect(session.body.memberships).toHaveLength(2);
+    expect(session.body.activeWorkspaceRole).toBe("MEMBER");
+    expect(session.body.memberships.every((row) => row.role === "MEMBER")).toBe(true);
+  });
+
+  it("rejects invalid workspace assignment payloads", async () => {
+    const client = await adminClient();
+    const base = {
+      fullName: "B2B Salah",
+      email: "b2b-salah@example.test",
+      role: "USER",
+      cmsAccess: false,
+    };
+
+    const personal = await client.json<{ error: { message: string } }>(
+      "/api/cms/accounts",
+      jsonBody({ ...base, workspaceMode: "PERSONAL", workspaceIds: [randomUUID()] }),
+    );
+    expect(personal.status).toBe(400);
+    expect(personal.body.error.message).toBe("Mode personal tidak menerima daftar workspace.");
+
+    const empty = await client.json<{ error: { message: string } }>(
+      "/api/cms/accounts",
+      jsonBody({ ...base, workspaceMode: "EXISTING", workspaceIds: [] }),
+    );
+    expect(empty.status).toBe(400);
+    expect(empty.body.error.message).toBe("Pilih minimal satu workspace untuk akun ini.");
+
+    const missing = await client.json<{ error: { message: string } }>(
+      "/api/cms/accounts",
+      jsonBody({ ...base, workspaceMode: "EXISTING", workspaceIds: [randomUUID()] }),
+    );
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.message).toBe("Workspace tidak ditemukan.");
+
+    const owner = await createAccount({ email: "ops-off@example.test" });
+    const inactive = await addWorkspace(owner.user.id, {
+      name: "Nonaktif",
+      role: "OWNER",
+      isActive: false,
+    });
+    const off = await client.json<{ error: { message: string } }>(
+      "/api/cms/accounts",
+      jsonBody({ ...base, workspaceMode: "EXISTING", workspaceIds: [inactive.id] }),
+    );
+    expect(off.status).toBe(400);
+    expect(off.body.error.message).toBe("Workspace tidak aktif.");
+  });
+
+  it("adds and removes account memberships without stranding the account", async () => {
+    const client = await adminClient();
+    const owner = await createAccount({ email: "ops@example.test", fullName: "Ops Satu" });
+    const extra = await addWorkspace(owner.user.id, { name: "Workspace C", role: "OWNER" });
+    const target = await createAccount({ email: "anggota@example.test" });
+
+    const added = await client.json<Array<{ workspaceId: string; role: string }>>(
+      `/api/cms/accounts/${target.user.id}/workspaces`,
+      jsonBody({ workspaceIds: [extra.id] }),
+    );
+    expect(added.status).toBe(200);
+    expect(added.body).toHaveLength(2);
+    expect(added.body.map((row) => row.workspaceId).sort()).toEqual(
+      [target.workspace.id, extra.id].sort(),
+    );
+
+    const repeated = await client.json<Array<{ workspaceId: string }>>(
+      `/api/cms/accounts/${target.user.id}/workspaces`,
+      jsonBody({ workspaceIds: [extra.id, extra.id] }),
+    );
+    expect(repeated.status).toBe(200);
+    expect(repeated.body).toHaveLength(2);
+
+    const detached = await client.json<undefined>(
+      `/api/cms/accounts/${target.user.id}/workspaces/${target.workspace.id}`,
+      { method: "DELETE" },
+    );
+    expect(detached.status).toBe(204);
+
+    const [relocated] = await db.select().from(users).where(eq(users.id, target.user.id)).limit(1);
+    expect(relocated?.defaultWorkspaceId).toBe(extra.id);
+
+    const stranded = await client.json<{ error: { message: string } }>(
+      `/api/cms/accounts/${target.user.id}/workspaces/${extra.id}`,
+      { method: "DELETE" },
+    );
+    expect(stranded.status).toBe(409);
+    expect(stranded.body.error.message).toBe("Setiap akun harus punya minimal satu workspace.");
+
+    const notMember = await client.json<{ error: { message: string } }>(
+      `/api/cms/accounts/${target.user.id}/workspaces/${owner.workspace.id}`,
+      { method: "DELETE" },
+    );
+    expect(notMember.status).toBe(404);
+    expect(notMember.body.error.message).toBe("Akun bukan anggota workspace tersebut.");
+
+    const badDefault = await client.json<{ error: { message: string } }>(
+      `/api/cms/accounts/${target.user.id}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ defaultWorkspaceId: owner.workspace.id }),
+      },
+    );
+    expect(badDefault.status).toBe(400);
+    expect(badDefault.body.error.message).toBe("Akun bukan anggota workspace tersebut.");
+
+    const movedDefault = await client.json<{ defaultWorkspaceId: string }>(
+      `/api/cms/accounts/${owner.user.id}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ defaultWorkspaceId: extra.id }),
+      },
+    );
+    expect(movedDefault.status).toBe(200);
+    expect(movedDefault.body.defaultWorkspaceId).toBe(extra.id);
+  });
+
+  it("blocks creators without CMS access from managing account workspaces", async () => {
+    const client = await adminClient();
+    const target = await createAccount({ email: "anggota@example.test" });
+
+    const creator = createClient();
+    await login(creator, "anggota@example.test");
+
+    const response = await creator.json<{ error: { code: string } }>(
+      `/api/cms/accounts/${target.user.id}/workspaces`,
+      jsonBody({ workspaceIds: [target.workspace.id] }),
+    );
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("FORBIDDEN");
   });
 
   it("validates the admin contact before saving it", async () => {
