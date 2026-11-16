@@ -750,6 +750,14 @@ async function main(): Promise<void> {
   }
 
   const demo = env.NODE_ENV !== "production" && !noDemo;
+  const ifEmpty = args.includes("--if-empty");
+  if (ifEmpty) {
+    const [existing] = await db.select({ id: users.id }).from(users).limit(1);
+    if (existing) {
+      console.log("(seed skipped: users already exist)");
+      return;
+    }
+  }
   const lines = await runSeed({ demo });
 
   for (const line of lines) console.log(line);

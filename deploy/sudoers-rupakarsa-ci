@@ -1,0 +1,1 @@
+woodpecker ALL=(root) NOPASSWD: /usr/local/bin/rupakarsa-ci-deploy

@@ -1,0 +1,32 @@
+[Unit]
+Description=Rupakarsa render worker (BullMQ)
+Documentation=https://api.rupakarsa.solvin.id
+After=network-online.target postgresql@17-main.service redis-server.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=rupakarsa
+Group=rupakarsa
+WorkingDirectory=/opt/rupakarsa
+EnvironmentFile=/etc/rupakarsa/api.env
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=512
+ExecStart=/opt/rupakarsa-node/bin/node dist/worker/index.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGTERM
+MemoryHigh=640M
+MemoryMax=768M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/rupakarsa

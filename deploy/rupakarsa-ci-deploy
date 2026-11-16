@@ -1,0 +1,65 @@
+#!/bin/bash
+# rupakarsa-ci-deploy <stage>
+# Installs the CI-built Rupakarsa API into /opt/rupakarsa, migrates, seeds when empty,
+# restarts api+worker. Root via /etc/sudoers.d/rupakarsa-ci.
+set -euo pipefail
+
+STAGE="${1:?usage: rupakarsa-ci-deploy <stage>}"
+TARGET=/opt/rupakarsa
+ENV_FILE=/etc/rupakarsa/api.env
+NODE=/opt/rupakarsa-node/bin/node
+MEDIA=/var/lib/rupakarsa/media
+SELF=/usr/local/bin/rupakarsa-ci-deploy
+
+for f in dist/index.js dist/worker/index.js dist/db/migrate.js dist/db/seed.js package.json; do
+  [ -f "$STAGE/$f" ] || { echo "not a rupakarsa stage: missing $f in $STAGE" >&2; exit 1; }
+done
+[ -d "$STAGE/drizzle" ] || { echo "stage has no drizzle/ migrations" >&2; exit 1; }
+[ -d "$STAGE/node_modules" ] || { echo "stage has no node_modules" >&2; exit 1; }
+[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE" >&2; exit 1; }
+
+# units + sudoers + this script come from the repo; install only when they differ
+for pair in \
+  "deploy/rupakarsa-api.service:/etc/systemd/system/rupakarsa-api.service" \
+  "deploy/rupakarsa-worker.service:/etc/systemd/system/rupakarsa-worker.service"; do
+  src="$STAGE/${pair%%:*}"; dst="${pair##*:}"
+  if [ -f "$src" ] && ! cmp -s "$src" "$dst"; then
+    install -o root -g root -m 644 "$src" "$dst"
+    NEED_DAEMON_RELOAD=1
+  fi
+done
+if [ -f "$STAGE/deploy/sudoers-rupakarsa-ci" ] && ! cmp -s "$STAGE/deploy/sudoers-rupakarsa-ci" /etc/sudoers.d/rupakarsa-ci; then
+  install -o root -g root -m 440 "$STAGE/deploy/sudoers-rupakarsa-ci" /etc/sudoers.d/rupakarsa-ci
+  visudo -c >/dev/null
+fi
+if [ -f "$STAGE/deploy/rupakarsa-ci-deploy" ] && ! cmp -s "$STAGE/deploy/rupakarsa-ci-deploy" "$SELF"; then
+  install -o root -g root -m 755 "$STAGE/deploy/rupakarsa-ci-deploy" "$SELF"
+fi
+if [ "${NEED_DAEMON_RELOAD:-0}" = "1" ]; then
+  systemctl daemon-reload
+fi
+
+install -d -o rupakarsa -g rupakarsa "$TARGET" "$MEDIA"
+rsync -a --delete --exclude '.git' "$STAGE/" "$TARGET/"
+chown -R rupakarsa:rupakarsa "$TARGET" "$MEDIA"
+chmod -R a+rX "$TARGET"
+
+run_as_app() {
+  sudo -u rupakarsa -- /bin/bash -c "set -a; . '$ENV_FILE'; set +a; cd '$TARGET' && exec $NODE $1"
+}
+
+run_as_app "dist/db/migrate.js"
+run_as_app "dist/db/seed.js --force --if-empty --no-demo"
+
+systemctl enable rupakarsa-api.service rupakarsa-worker.service
+systemctl restart rupakarsa-api.service rupakarsa-worker.service
+for _ in $(seq 1 30); do
+  sleep 1
+  if curl -fsS -m 2 -o /dev/null http://127.0.0.1:8787/health; then
+    echo "rupakarsa-api healthy"
+    exit 0
+  fi
+done
+echo "rupakarsa-api unhealthy; journal:" >&2
+journalctl -u rupakarsa-api.service -n 40 --no-pager >&2
+exit 1
