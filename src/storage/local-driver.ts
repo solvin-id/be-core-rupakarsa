@@ -1,8 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import { env } from "../env.js";
-import type { StorageDriver, StoredObject } from "../adapters/types.js";
+import type { PutResult, StorageDriver, StoredObject } from "../adapters/types.js";
 
 const KEY_PATTERN = /^[a-zA-Z0-9/_.-]+$/;
 
@@ -26,10 +25,11 @@ export class LocalStorageDriver implements StorageDriver {
     return join(this.root, key);
   }
 
-  async put(key: string, bytes: Buffer, _mime: string): Promise<void> {
+  async put(key: string, bytes: Buffer, _mime: string): Promise<PutResult> {
     const target = this.resolveKey(key);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, bytes, { mode: 0o600 });
+    return {};
   }
 
   url(key: string): string {
@@ -50,6 +50,16 @@ export class LocalStorageDriver implements StorageDriver {
       return null;
     }
   }
+
+  async remove(key: string): Promise<void> {
+    let target: string;
+    try {
+      target = this.resolveKey(key);
+    } catch {
+      return;
+    }
+    await rm(target, { force: true });
+  }
 }
 
 export function mimeFor(key: string): string {
@@ -60,8 +70,4 @@ export function mimeFor(key: string): string {
   if (key.endsWith(".mp4")) return "video/mp4";
   if (key.endsWith(".webm")) return "video/webm";
   return "application/octet-stream";
-}
-
-export function createLocalStorage(): LocalStorageDriver {
-  return new LocalStorageDriver(env.STORAGE_LOCAL_DIR, env.PUBLIC_API_URL);
 }
