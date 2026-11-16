@@ -5,6 +5,7 @@ import { requireCms, sessionGuard } from "../../auth/middleware.js";
 import { db } from "../../db/client.js";
 import { tokenLedger, users, workspaceMemberships, workspaces } from "../../db/schema.js";
 import { conflict, notFound, validation } from "../../http/errors.js";
+import { clientIp } from "../../http/middleware.js";
 import { defaultHook } from "../../http/route-helpers.js";
 import { toMemberSummary, toWorkspace } from "../../http/serialize.js";
 import {
@@ -13,6 +14,7 @@ import {
   WorkspaceSchema,
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
+import { logAudit } from "../../services/audit-service.js";
 import { slugify } from "../../services/slug.js";
 import { topUpWorkspace } from "../../services/token-service.js";
 import { takenSlugs, uniqueSlug } from "../../services/workspace-service.js";
@@ -159,6 +161,7 @@ const patchRoute = createRoute({
 });
 
 cmsWorkspaceRoutes.openapi(patchRoute, async (c) => {
+  const auth = c.get("auth");
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
 
@@ -172,6 +175,15 @@ cmsWorkspaceRoutes.openapi(patchRoute, async (c) => {
 
   const [updated] = await db.update(workspaces).set(patch).where(eq(workspaces.id, id)).returning();
   if (!updated) throw notFound("Workspace tidak ditemukan.");
+
+  await logAudit(db, {
+    actorUserId: auth.user.id,
+    action: "workspace.update",
+    targetType: "workspace",
+    targetId: updated.id,
+    metadata: { fields: Object.keys(patch) },
+    ip: clientIp(c),
+  });
 
   return c.json(toWorkspace(updated), 200);
 });
@@ -215,6 +227,15 @@ cmsWorkspaceRoutes.openapi(topupRoute, async (c) => {
       plan: body.plan,
     }),
   );
+
+  await logAudit(db, {
+    actorUserId: auth.user.id,
+    action: "workspace.topup",
+    targetType: "workspace",
+    targetId: updated.id,
+    metadata: { tokens: body.tokens, plan: body.plan },
+    ip: clientIp(c),
+  });
 
   return c.json(toWorkspace(updated), 200);
 });
