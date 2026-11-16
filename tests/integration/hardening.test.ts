@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { createApp } from "../../src/app.js";
 import { createRedisConnection } from "../../src/queue/generation-queue.js";
 import { SETTING_KEYS, writeSetting } from "../../src/services/settings.js";
 import { db } from "../../src/db/client.js";
@@ -56,6 +57,42 @@ describe("hardening", () => {
       }),
     );
     expect(withHeader.status).toBe(200);
+  });
+
+  it("accepts the csrf cookie the browser can read when a stale duplicate exists", async () => {
+    await createAccount({ email: "dup-csrf@example.test" });
+    const client = createClient();
+    await login(client, "dup-csrf@example.test");
+    const cookie = client.cookie();
+    const csrf = /rupakarsa_csrf=([^;]+)/.exec(cookie)?.[1] ?? "";
+    expect(csrf.length).toBeGreaterThan(0);
+
+    const app = createApp();
+    // A host-only cookie left by an older deploy is sent first, while the page can only read the
+    // domain-scoped one it echoes in the header.
+    const duplicated = `rupakarsa_csrf=stale-token; ${cookie}`;
+
+    const accepted = await app.request("/api/creator/folders", {
+      method: "POST",
+      headers: {
+        cookie: duplicated,
+        "content-type": "application/json",
+        "x-csrf-token": csrf,
+      },
+      body: JSON.stringify({ name: "Duplikat" }),
+    });
+    expect(accepted.status).toBe(201);
+
+    const rejected = await app.request("/api/creator/folders", {
+      method: "POST",
+      headers: {
+        cookie: duplicated,
+        "content-type": "application/json",
+        "x-csrf-token": "not-a-cookie-value",
+      },
+      body: JSON.stringify({ name: "Palsu" }),
+    });
+    expect(rejected.status).toBe(403);
   });
 
   it("enforces the workspace daily generation quota", async () => {

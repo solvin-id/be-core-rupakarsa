@@ -1,10 +1,9 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
-import { getCookie } from "hono/cookie";
 import { secureHeaders } from "hono/secure-headers";
 
-import { CSRF_COOKIE, SESSION_COOKIE } from "../auth/session.js";
+import { CSRF_COOKIE, SESSION_COOKIE, cookieValues } from "../auth/session.js";
 import { env } from "../env.js";
 import { AppError, forbidden } from "./errors.js";
 import { logger } from "../logger.js";
@@ -66,9 +65,10 @@ export function corsMiddleware(): MiddlewareHandler<AppBindings> {
 }
 
 /**
- * Double-submit cookie: every cookie-authenticated mutation must echo the non-httpOnly CSRF cookie
- * in `x-csrf-token`. Requests without a session cookie (login, password reset, webhooks) pass
- * through untouched.
+ * Double-submit cookie: every cookie-authenticated mutation must echo a CSRF cookie value in
+ * `x-csrf-token`. Requests without a session cookie (login, password reset, webhooks) pass through
+ * untouched. A browser may send more than one value for the same name (a host-only leftover next to
+ * the domain cookie), and the page can only read the ones its own origin owns, so any match counts.
  */
 export function csrfMiddleware(): MiddlewareHandler<AppBindings> {
   return async (c, next) => {
@@ -78,14 +78,26 @@ export function csrfMiddleware(): MiddlewareHandler<AppBindings> {
       return;
     }
 
-    if (!getCookie(c, SESSION_COOKIE)) {
+    if (cookieValues(c, SESSION_COOKIE).length === 0) {
       await next();
       return;
     }
 
-    const cookieToken = getCookie(c, CSRF_COOKIE) ?? "";
     const headerToken = c.req.header("x-csrf-token") ?? "";
-    if (cookieToken.length === 0 || headerToken !== cookieToken) {
+    const csrfValues = cookieValues(c, CSRF_COOKIE);
+    if (headerToken.length === 0 || !csrfValues.includes(headerToken)) {
+      // Counts only: whether the browser sent 0, 1 or several csrf cookies decides the fix.
+      logger.warn(
+        {
+          requestId: c.get("requestId"),
+          event: "csrf.rejected",
+          method,
+          path: c.req.path,
+          csrfCookies: csrfValues.length,
+          headerPresent: headerToken.length > 0,
+        },
+        "csrf rejected",
+      );
       throw forbidden("Token CSRF tidak valid. Muat ulang halaman.");
     }
     await next();

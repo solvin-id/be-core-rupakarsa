@@ -13,6 +13,28 @@ export const SESSION_COOKIE = "rupakarsa_session";
 export const CSRF_COOKIE = "rupakarsa_csrf";
 const TOUCH_INTERVAL_MS = 60_000;
 
+/**
+ * Every value the browser sent for one cookie name. Duplicates are legal: a host-only cookie left
+ * by an older deploy is sent alongside the domain-scoped one, and which of them a browser puts first
+ * is not something the server can assume.
+ */
+export function cookieValues(c: Context, name: string): string[] {
+  const raw = c.req.header("cookie") ?? "";
+  const values: string[] = [];
+  for (const part of raw.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    const value = part.slice(separator + 1).trim();
+    try {
+      values.push(decodeURIComponent(value));
+    } catch {
+      values.push(value);
+    }
+  }
+  return values;
+}
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -46,6 +68,12 @@ export async function createSession(
 }
 
 export function writeSessionCookie(c: Context, token: string): void {
+  // A deploy that ran before COOKIE_DOMAIN was set left host-only cookies on the API host. They are
+  // still sent (and sort first), so expire them here; only the shared domain cookie remains.
+  if (env.COOKIE_DOMAIN.length > 0) {
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
+    deleteCookie(c, CSRF_COOKIE, { path: "/" });
+  }
   setCookie(c, SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "Lax",
@@ -65,6 +93,9 @@ export function writeSessionCookie(c: Context, token: string): void {
 }
 
 export function clearSessionCookie(c: Context): void {
+  // Delete both the domain cookie and any host-only duplicate left by an older deploy.
+  deleteCookie(c, SESSION_COOKIE, { path: "/" });
+  deleteCookie(c, CSRF_COOKIE, { path: "/" });
   deleteCookie(c, SESSION_COOKIE, {
     path: "/",
     domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
