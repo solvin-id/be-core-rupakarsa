@@ -2,15 +2,17 @@ import { and, eq } from "drizzle-orm";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 
 import { roleAtLeast, sessionGuard } from "../../auth/middleware.js";
+import { decryptSecret, encryptSecret } from "../../crypto/encryption.js";
 import { db } from "../../db/client.js";
 import {
   users,
   workspaceJoinRequests,
   workspaceMemberships,
+  workspaceStorage,
   workspaces,
 } from "../../db/schema.js";
 import type { WorkspaceMembershipRow } from "../../db/schema.js";
-import { conflict, forbidden, notFound, validation } from "../../http/errors.js";
+import { AppError, conflict, forbidden, notFound, validation } from "../../http/errors.js";
 import { defaultHook } from "../../http/route-helpers.js";
 import {
   toJoinRequest,
@@ -20,7 +22,9 @@ import {
 } from "../../http/serialize.js";
 import {
   ErrorResponseSchema,
+  ProviderTestSchema,
   SessionPayloadSchema,
+  WorkspaceDriveSchema,
   WorkspaceJoinRequestSchema,
   WorkspaceMemberSummarySchema,
   WorkspaceMembershipSchema,
@@ -29,6 +33,8 @@ import {
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
 import { slugify } from "../../services/slug.js";
+import { clearStorageCache } from "../../services/storage-service.js";
+import { GDriveStorageDriver, parseServiceAccountJson } from "../../storage/gdrive-driver.js";
 import {
   buildWorkspacesPayload,
   findJoinRequest,
@@ -599,4 +605,204 @@ creatorWorkspaceRoutes.openapi(rejectRoute, async (c) => {
     "Hanya owner atau admin yang dapat menolak permintaan.",
   );
   return c.body(null, 204);
+});
+
+const driveParams = z.object({ id: z.string().uuid() });
+
+const getDriveRoute = createRoute({
+  method: "get",
+  path: "/workspaces/{id}/storage/drive",
+  tags: ["Creator storage"],
+  request: { params: driveParams },
+  responses: {
+    200: { description: "Workspace Drive status", content: { "application/json": { schema: WorkspaceDriveSchema } } },
+    403: { description: "Not a member", content: errorContent },
+  },
+});
+
+creatorWorkspaceRoutes.openapi(getDriveRoute, async (c) => {
+  const auth = c.get("auth");
+  const { id } = c.req.valid("param");
+  await requireActorRole(id, auth.user.id, "Anda bukan anggota workspace ini.", "MEMBER");
+
+  const [row] = await db
+    .select()
+    .from(workspaceStorage)
+    .where(eq(workspaceStorage.workspaceId, id))
+    .limit(1);
+
+  return c.json(
+    {
+      connected: Boolean(row && row.privateKeyEncrypted.length > 0 && row.folderId.length > 0),
+      serviceAccountEmail: row?.serviceAccountEmail ?? "",
+      folderId: row?.folderId ?? "",
+      connectedAt: row?.connectedAt ? row.connectedAt.toISOString() : null,
+      lastError: row?.lastError ?? null,
+    },
+    200,
+  );
+});
+
+const putDriveRoute = createRoute({
+  method: "put",
+  path: "/workspaces/{id}/storage/drive",
+  tags: ["Creator storage"],
+  request: {
+    params: driveParams,
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            serviceAccountEmail: z.string(),
+            privateKey: z.string(),
+            folderId: z.string(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: { description: "Drive connected", content: { "application/json": { schema: ProviderTestSchema } } },
+    400: { description: "Invalid service account JSON", content: errorContent },
+    403: { description: "Admin only", content: errorContent },
+    502: { description: "Drive probe failed", content: errorContent },
+  },
+});
+
+creatorWorkspaceRoutes.openapi(putDriveRoute, async (c) => {
+  const auth = c.get("auth");
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
+  await requireActorRole(
+    id,
+    auth.user.id,
+    "Hanya owner atau admin yang dapat menghubungkan Google Drive.",
+    "ADMIN",
+  );
+
+  const folderId = body.folderId.trim();
+  if (folderId.length === 0) throw validation("Folder ID Google Drive wajib diisi.");
+
+  const account = parseServiceAccountJson(body.privateKey);
+  const serviceAccountEmail = account.serviceAccountEmail || body.serviceAccountEmail.trim();
+  if (serviceAccountEmail.length === 0) {
+    throw validation("Email service account wajib diisi.");
+  }
+
+  const driver = new GDriveStorageDriver({
+    serviceAccountEmail,
+    privateKey: account.privateKey,
+    folderId,
+  });
+  try {
+    await driver.probe();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Google Drive tidak dapat dihubungi.";
+    throw new AppError(502, "STORAGE_ERROR", message);
+  }
+
+  await db
+    .insert(workspaceStorage)
+    .values({
+      workspaceId: id,
+      serviceAccountEmail,
+      privateKeyEncrypted: encryptSecret(account.privateKey),
+      folderId,
+      connectedByUserId: auth.user.id,
+      connectedAt: new Date(),
+      updatedAt: new Date(),
+      lastError: null,
+    })
+    .onConflictDoUpdate({
+      target: workspaceStorage.workspaceId,
+      set: {
+        serviceAccountEmail,
+        privateKeyEncrypted: encryptSecret(account.privateKey),
+        folderId,
+        connectedByUserId: auth.user.id,
+        connectedAt: new Date(),
+        updatedAt: new Date(),
+        lastError: null,
+      },
+    });
+  clearStorageCache();
+
+  return c.json({ ok: true, message: "Google Drive terhubung." }, 200);
+});
+
+const deleteDriveRoute = createRoute({
+  method: "delete",
+  path: "/workspaces/{id}/storage/drive",
+  tags: ["Creator storage"],
+  request: { params: driveParams },
+  responses: {
+    204: { description: "Drive disconnected" },
+    403: { description: "Admin only", content: errorContent },
+  },
+});
+
+creatorWorkspaceRoutes.openapi(deleteDriveRoute, async (c) => {
+  const auth = c.get("auth");
+  const { id } = c.req.valid("param");
+  await requireActorRole(
+    id,
+    auth.user.id,
+    "Hanya owner atau admin yang dapat memutus Google Drive.",
+    "ADMIN",
+  );
+
+  await db.delete(workspaceStorage).where(eq(workspaceStorage.workspaceId, id));
+  clearStorageCache();
+  return c.body(null, 204);
+});
+
+const testDriveRoute = createRoute({
+  method: "post",
+  path: "/workspaces/{id}/storage/drive/test",
+  tags: ["Creator storage"],
+  request: { params: driveParams },
+  responses: {
+    200: { description: "Drive probe result", content: { "application/json": { schema: ProviderTestSchema } } },
+    403: { description: "Admin only", content: errorContent },
+    404: { description: "Drive not connected", content: errorContent },
+  },
+});
+
+creatorWorkspaceRoutes.openapi(testDriveRoute, async (c) => {
+  const auth = c.get("auth");
+  const { id } = c.req.valid("param");
+  await requireActorRole(
+    id,
+    auth.user.id,
+    "Hanya owner atau admin yang dapat menguji Google Drive.",
+    "ADMIN",
+  );
+
+  const [row] = await db
+    .select()
+    .from(workspaceStorage)
+    .where(eq(workspaceStorage.workspaceId, id))
+    .limit(1);
+  if (!row) throw notFound("Google Drive belum terhubung.");
+
+  try {
+    const driver = new GDriveStorageDriver({
+      serviceAccountEmail: row.serviceAccountEmail,
+      privateKey: decryptSecret(row.privateKeyEncrypted),
+      folderId: row.folderId,
+    });
+    await driver.probe();
+    await db
+      .update(workspaceStorage)
+      .set({ lastError: null, updatedAt: new Date() })
+      .where(eq(workspaceStorage.workspaceId, id));
+    return c.json({ ok: true, message: "Google Drive terhubung." }, 200);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Google Drive tidak dapat dihubungi.";
+    await db
+      .update(workspaceStorage)
+      .set({ lastError: message, updatedAt: new Date() })
+      .where(eq(workspaceStorage.workspaceId, id));
+    return c.json({ ok: false, message }, 200);
+  }
 });

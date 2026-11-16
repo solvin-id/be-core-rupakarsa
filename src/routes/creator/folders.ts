@@ -14,6 +14,7 @@ import {
   GenerationSchema,
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
+import { purgedMapFor } from "../../services/generation-service.js";
 
 export const creatorFolderRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
 
@@ -214,5 +215,9 @@ creatorFolderRoutes.openapi(folderGenerationsRoute, async (c) => {
     .where(eq(generations.folderId, folder.id))
     .orderBy(desc(generations.createdAt));
 
-  return c.json(rows.map(toGeneration), 200);
+  const purged = await purgedMapFor(rows.map((row) => row.id));
+  return c.json(
+    rows.map((row) => toGeneration(row, purged.get(row.id) ?? null)),
+    200,
+  );
 });

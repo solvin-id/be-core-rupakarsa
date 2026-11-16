@@ -1,23 +1,40 @@
 import { randomUUID } from "node:crypto";
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { fileTypeFromBuffer } from "file-type";
 
 import { sessionGuard } from "../../auth/middleware.js";
-import { db } from "../../db/client.js";
-import { mediaAssets } from "../../db/schema.js";
 import { validation } from "../../http/errors.js";
 import { uploadBodyLimit } from "../../http/middleware.js";
 import { defaultHook } from "../../http/route-helpers.js";
 import { ErrorResponseSchema, UploadResponseSchema } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
-import { getStorage } from "../../storage/index.js";
+import { putAsset } from "../../services/storage-service.js";
 
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+
 const MIME_EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
 };
+
+function normalizeMime(mime: string): string {
+  return mime === "image/jpg" ? "image/jpeg" : mime;
+}
+
+function slugifyName(name: string): string {
+  const base = name.replace(/\.[^.]+$/, "");
+  const slug = base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug.length > 0 ? slug : "berkas";
+}
 
 export const creatorUploadRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
 
@@ -52,28 +69,39 @@ const uploadRoute = createRoute({
 
 creatorUploadRoutes.openapi(uploadRoute, async (c) => {
   const auth = c.get("auth");
+  if (!auth.workspaceId) throw validation("Pilih workspace aktif sebelum mengunggah berkas.");
+
   const body = await c.req.parseBody();
   const file = body["file"];
 
-  if (!(file instanceof File)) throw validation("Berkas gambar wajib diunggah.");
+  if (!(file instanceof File)) throw validation("Berkas wajib diunggah.");
 
-  const extension = MIME_EXTENSIONS[file.type];
-  if (!extension) throw validation("Format harus JPG, JPEG, PNG, atau WEBP.");
-  if (file.size > MAX_UPLOAD_BYTES) throw validation("Ukuran gambar maksimal 10 MB.");
+  const claimedMime = normalizeMime(file.type);
+  const extension = MIME_EXTENSIONS[claimedMime];
+  if (!extension) throw validation("Format harus JPG, JPEG, PNG, WEBP, MP4, atau WEBM.");
+
+  const isVideo = claimedMime.startsWith("video/");
+  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+  const limitMessage = isVideo ? "Ukuran video maksimal 100 MB." : "Ukuran gambar maksimal 10 MB.";
+  if (file.size > maxBytes) throw validation(limitMessage);
 
   const bytes = Buffer.from(await file.arrayBuffer());
-  if (bytes.byteLength > MAX_UPLOAD_BYTES) throw validation("Ukuran gambar maksimal 10 MB.");
+  if (bytes.byteLength > maxBytes) throw validation(limitMessage);
 
-  const key = `uploads/${auth.user.id}/${randomUUID()}.${extension}`;
-  const storage = getStorage();
-  await storage.put(key, bytes, file.type);
+  const detected = await fileTypeFromBuffer(bytes);
+  const detectedMime = detected ? normalizeMime(detected.mime) : "";
+  if (!MIME_EXTENSIONS[detectedMime] || detectedMime !== claimedMime) {
+    throw validation("Isi berkas tidak cocok dengan tipe yang diklaim.");
+  }
 
-  await db.insert(mediaAssets).values({
-    key,
-    mime: file.type,
-    size: bytes.byteLength,
+  const key = `workspaces/${auth.workspaceId}/uploads/${auth.user.id}/${randomUUID()}-${slugifyName(file.name)}.${extension}`;
+  const { asset, url } = await putAsset(auth.workspaceId, key, bytes, claimedMime, {
     uploadedBy: auth.user.id,
+    durationMs: null,
   });
 
-  return c.json({ url: storage.url(key), mime: file.type, size: bytes.byteLength }, 201);
+  return c.json(
+    { id: asset.id, url, key, mime: claimedMime, size: bytes.byteLength, durationMs: null },
+    201,
+  );
 });

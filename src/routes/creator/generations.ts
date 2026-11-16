@@ -1,9 +1,12 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 
 import { requireWorkspace, sessionGuard } from "../../auth/middleware.js";
 import { db } from "../../db/client.js";
-import { aiModels, generations } from "../../db/schema.js";
+import { env } from "../../env.js";
+import { expensiveLimiter } from "../../http/rate-limit.js";
+import { aiModels, aiProviders, generations } from "../../db/schema.js";
 import { notFound } from "../../http/errors.js";
 import { defaultHook } from "../../http/route-helpers.js";
 import { toGeneration, toModel } from "../../http/serialize.js";
@@ -16,7 +19,12 @@ import {
   PlanResponseSchema,
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
-import { createGeneration, planGeneration } from "../../services/generation-service.js";
+import {
+  createGeneration,
+  planGeneration,
+  purgedMapFor,
+} from "../../services/generation-service.js";
+import { getAiSettings } from "../../services/settings.js";
 
 export const creatorGenerationRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
 
@@ -27,13 +35,19 @@ creatorGenerationRoutes.use("/models", sessionGuard(), requireWorkspace("MEMBER"
 creatorGenerationRoutes.use("/generations", sessionGuard(), requireWorkspace("MEMBER"));
 creatorGenerationRoutes.use("/generations/*", sessionGuard(), requireWorkspace("MEMBER"));
 
+/** Debug hook for refund drills; production ignores it entirely. */
+function simulateFailureFromHeader(c: Context<AppBindings>): boolean {
+  if (env.NODE_ENV === "production") return false;
+  return c.req.header("x-simulate-failure") === "1";
+}
+
 const modelsRoute = createRoute({
   method: "get",
   path: "/models",
   tags: ["Creator catalog"],
   responses: {
     200: {
-      description: "Active models",
+      description: "Active renderable models",
       content: { "application/json": { schema: z.array(AiModelSchema) } },
     },
   },
@@ -41,28 +55,45 @@ const modelsRoute = createRoute({
 
 creatorGenerationRoutes.openapi(modelsRoute, async (c) => {
   const rows = await db
-    .select()
+    .select({ model: aiModels })
     .from(aiModels)
-    .where(eq(aiModels.isActive, true))
+    .innerJoin(aiProviders, eq(aiProviders.id, aiModels.providerId))
+    .where(
+      and(
+        eq(aiModels.isActive, true),
+        eq(aiProviders.isActive, true),
+        sql`${aiModels.outputCapabilities} && ARRAY['IMAGE','VIDEO']::model_capability[]`,
+      ),
+    )
     .orderBy(aiModels.tokenCost, aiModels.displayName);
-  return c.json(rows.map(toModel), 200);
+
+  const { defaultVideoModelId } = await getAiSettings(db);
+  return c.json(
+    rows.map((row) =>
+      toModel(row.model, row.model.mediaType === "VIDEO" && row.model.id === defaultVideoModelId),
+    ),
+    200,
+  );
 });
 
 const planRoute = createRoute({
   method: "post",
   path: "/generations/plan",
   tags: ["Creator generations"],
+  middleware: [expensiveLimiter()] as const,
   request: {
     body: {
       content: {
         "application/json": {
           schema: z.object({
+            folderId: z.string().uuid(),
             modelId: z.string().uuid(),
             rawPrompt: z.string(),
             durationSec: z.number().int().optional(),
             resolution: z.string(),
             aspectRatio: z.string(),
-            hasReference: z.boolean().default(false),
+            attachmentKeys: z.array(z.string()).max(4).default([]),
+            contextIds: z.array(z.string().uuid()).default([]),
           }),
         },
       },
@@ -85,12 +116,14 @@ creatorGenerationRoutes.openapi(planRoute, async (c) => {
   const result = await planGeneration({
     workspaceId,
     userId: auth.user.id,
+    folderId: body.folderId,
     modelId: body.modelId,
     rawPrompt: body.rawPrompt,
     durationSec: body.durationSec,
     resolution: body.resolution,
     aspectRatio: body.aspectRatio,
-    hasReference: body.hasReference,
+    attachmentKeys: body.attachmentKeys,
+    contextIds: body.contextIds,
   });
 
   return c.json(result, 200);
@@ -100,6 +133,7 @@ const createGenerationRoute = createRoute({
   method: "post",
   path: "/generations",
   tags: ["Creator generations"],
+  middleware: [expensiveLimiter()] as const,
   request: {
     body: {
       content: {
@@ -108,10 +142,11 @@ const createGenerationRoute = createRoute({
             folderId: z.string().uuid(),
             modelId: z.string().uuid(),
             rawPrompt: z.string(),
-            plannedPrompt: z.string(),
-            referenceImageUrl: z.string().nullable().optional(),
+            planMode: z.boolean().default(true),
+            finalPrompt: z.string().nullable().optional(),
+            attachmentKeys: z.array(z.string()).max(4).default([]),
+            contextIds: z.array(z.string().uuid()).default([]),
             selectedParams: GenerationParamsSchema,
-            simulateFailure: z.boolean().optional(),
           }),
         },
       },
@@ -141,10 +176,12 @@ creatorGenerationRoutes.openapi(createGenerationRoute, async (c) => {
     folderId: body.folderId,
     modelId: body.modelId,
     rawPrompt: body.rawPrompt,
-    plannedPrompt: body.plannedPrompt,
-    referenceImageUrl: body.referenceImageUrl ?? null,
+    planMode: body.planMode,
+    finalPrompt: body.finalPrompt ?? null,
+    attachmentKeys: body.attachmentKeys,
+    contextIds: body.contextIds,
     selectedParams: body.selectedParams,
-    simulateFailure: body.simulateFailure ?? false,
+    simulateFailure: simulateFailureFromHeader(c),
   });
 
   return c.json({ generation: toGeneration(result.generation), workspace: result.workspace }, 201);
@@ -174,7 +211,8 @@ creatorGenerationRoutes.openapi(getGenerationRoute, async (c) => {
     .limit(1);
   if (!row) throw notFound("Generation tidak ditemukan.");
 
-  return c.json(toGeneration(row), 200);
+  const purged = await purgedMapFor([row.id]);
+  return c.json(toGeneration(row, purged.get(row.id) ?? null), 200);
 });
 
 const deleteGenerationRoute = createRoute({
@@ -227,5 +265,9 @@ creatorGenerationRoutes.openapi(recentRoute, async (c) => {
     .orderBy(desc(generations.createdAt))
     .limit(50);
 
-  return c.json(rows.map(toGeneration), 200);
+  const purged = await purgedMapFor(rows.map((row) => row.id));
+  return c.json(
+    rows.map((row) => toGeneration(row, purged.get(row.id) ?? null)),
+    200,
+  );
 });

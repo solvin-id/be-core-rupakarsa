@@ -1,5 +1,10 @@
 import { env } from "../env.js";
-import { enqueueRender as enqueueQueue, closeQueue } from "./generation-queue.js";
+import {
+  enqueueRender as enqueueQueue,
+  closeQueue,
+  getQueueCounts,
+  pingRedis,
+} from "./generation-queue.js";
 import { enqueueRender as enqueueInline } from "./inline.js";
 
 export type { RenderJob } from "./generation-queue.js";
@@ -16,4 +21,4 @@ export type EnqueueRender = (
 export const enqueueRender: EnqueueRender =
   env.GENERATION_DRIVER === "inline" ? enqueueInline : enqueueQueue;
 
-export { closeQueue };
+export { closeQueue, getQueueCounts, pingRedis };
