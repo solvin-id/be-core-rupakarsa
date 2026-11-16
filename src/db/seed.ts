@@ -17,11 +17,17 @@ import {
 import type { GenerationParams } from "./schema.js";
 import { env } from "../env.js";
 import { buildPosterSvg } from "../adapters/stub-render.js";
-import { getStorage } from "../storage/index.js";
+import { publicUrlFor, resolveStorage } from "../services/storage-service.js";
 import { MODEL_TEMPLATES } from "../services/model-catalog.js";
 import {
+  DEFAULT_AI,
   DEFAULT_CONTACT,
+  DEFAULT_LIMITS,
+  DEFAULT_MAIL,
+  DEFAULT_PAYMENT,
   DEFAULT_PRICING,
+  DEFAULT_SECURITY,
+  DEFAULT_STORAGE,
   SETTING_KEYS,
   ensureSetting,
 } from "../services/settings.js";
@@ -55,17 +61,47 @@ interface ProviderSeed {
   code: string;
   name: string;
   baseUrl: string;
+  kind: "HIGGSFIELD" | "OPENAI_COMPATIBLE";
+  isFixed: boolean;
+  modelsPath: string;
 }
 
 const PROVIDERS: ProviderSeed[] = [
-  { code: "HIGGSFIELD", name: "Higgsfield", baseUrl: "https://platform.higgsfield.ai" },
-  { code: "KENARI_AI", name: "Kenari AI", baseUrl: "https://api.kenariai.com/v1" },
-  { code: "R2", name: "Cloudflare R2", baseUrl: "https://rupakarsa.r2.cloudflarestorage.com" },
+  {
+    code: "HIGGSFIELD",
+    name: "Higgsfield",
+    baseUrl: "https://platform.higgsfield.ai",
+    kind: "HIGGSFIELD",
+    isFixed: true,
+    modelsPath: "/v1/models",
+  },
+  {
+    code: "DEEPSEEK",
+    name: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    kind: "OPENAI_COMPATIBLE",
+    isFixed: false,
+    modelsPath: "/models",
+  },
+  {
+    code: "KENARI_AI",
+    name: "Kenari AI",
+    baseUrl: "https://api.kenariai.com/v1",
+    kind: "OPENAI_COMPATIBLE",
+    isFixed: false,
+    modelsPath: "/models",
+  },
 ];
 
 export async function seedPlatform(tx: Tx): Promise<void> {
   await ensureSetting(tx, SETTING_KEYS.contact, DEFAULT_CONTACT);
   await ensureSetting(tx, SETTING_KEYS.pricing, DEFAULT_PRICING);
+  await ensureSetting(tx, SETTING_KEYS.ai, DEFAULT_AI);
+  await ensureSetting(tx, SETTING_KEYS.storage, DEFAULT_STORAGE);
+  await ensureSetting(tx, SETTING_KEYS.mail, DEFAULT_MAIL);
+  await ensureSetting(tx, SETTING_KEYS.payment, DEFAULT_PAYMENT);
+  await ensureSetting(tx, SETTING_KEYS.security, DEFAULT_SECURITY);
+  await ensureSetting(tx, SETTING_KEYS.limits, DEFAULT_LIMITS);
 
   for (const provider of PROVIDERS) {
     await tx
@@ -74,6 +110,9 @@ export async function seedPlatform(tx: Tx): Promise<void> {
         code: provider.code,
         name: provider.name,
         baseUrl: provider.baseUrl,
+        kind: provider.kind,
+        isFixed: provider.isFixed,
+        modelsPath: provider.modelsPath,
         isActive: true,
       })
       .onConflictDoNothing({ target: aiProviders.code });
@@ -96,7 +135,11 @@ export async function seedPlatform(tx: Tx): Promise<void> {
         providerId: provider.id,
         code: template.code,
         displayName: template.displayName,
+        providerModelId: template.code,
         mediaType: template.mediaType,
+        inputCapabilities: ["TEXT", "IMAGE"],
+        outputCapabilities: [template.mediaType],
+        source: "SYNC",
         allowedParams: template.allowedParams,
         tokenCost: template.tokenCost,
         isActive: template.code !== "kling-2.6-pro",
@@ -583,8 +626,7 @@ export async function seedDemo(tx: Tx): Promise<void> {
 
   const modelRows = await tx.select().from(aiModels);
   const modelByCode = new Map(modelRows.map((row) => [row.code, row]));
-  const storage = getStorage();
-  const useLocalMedia = env.STORAGE_DRIVER === "local";
+  const storage = await resolveStorage(IDS.workspace.alfateve);
 
   const existingGenerations = await tx
     .select({ id: generations.id })
@@ -597,16 +639,16 @@ export async function seedDemo(tx: Tx): Promise<void> {
       if (!model) continue;
 
       let outputUrl: string | null = null;
-      if (generation.status === "COMPLETED" && useLocalMedia) {
-        const key = `generations/${generation.id}.svg`;
+      if (generation.status === "COMPLETED") {
+        const key = `workspaces/${IDS.workspace.alfateve}/generations/${generation.id}.svg`;
         const svg = buildPosterSvg(generation.id, {
           prompt: generation.plannedPrompt,
           modelName: model.displayName,
           mediaType: generation.mediaType,
           selectedParams: generation.selectedParams,
         });
-        await storage.put(key, Buffer.from(svg, "utf8"), "image/svg+xml");
-        outputUrl = storage.url(key);
+        await storage.driver.put(key, Buffer.from(svg, "utf8"), "image/svg+xml");
+        outputUrl = publicUrlFor(key, storage.driver);
       }
 
       await tx.insert(generations).values({

@@ -8,6 +8,13 @@
       "when": 1794806432161,
       "tag": "0000_previous_night_nurse",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794838299351,
+      "tag": "0001_dashing_deathstrike",
+      "breakpoints": true
     }
   ]
 }

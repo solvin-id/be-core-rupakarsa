@@ -4,6 +4,7 @@ export const RoleSchema = z.enum(["USER", "SUPERADMIN"]);
 export const WorkspaceRoleSchema = z.enum(["OWNER", "ADMIN", "MEMBER"]);
 export const JoinRequestStatusSchema = z.enum(["PENDING", "APPROVED", "REJECTED"]);
 export const MediaTypeSchema = z.enum(["VIDEO", "IMAGE"]);
+export const MediaCapabilitySchema = z.enum(["TEXT", "IMAGE", "VIDEO"]);
 export const GenerationStatusSchema = z.enum(["QUEUED", "RENDERING", "COMPLETED", "FAILED"]);
 
 export const UserSchema = z
@@ -15,6 +16,7 @@ export const UserSchema = z
     role: RoleSchema,
     cmsAccess: z.boolean(),
     isActive: z.boolean(),
+    totpEnabled: z.boolean(),
     createdAt: z.string(),
   })
   .openapi("User");
@@ -88,6 +90,21 @@ export const SessionPayloadSchema = z
   })
   .openapi("SessionPayload");
 
+export const LoginResponseSchema = z
+  .union([
+    SessionPayloadSchema,
+    z.object({ totpRequired: z.literal(true), challengeToken: z.string() }),
+  ])
+  .openapi("LoginResponse");
+
+export const TotpEnrollmentSchema = z
+  .object({
+    secret: z.string(),
+    otpauthUrl: z.string(),
+    qrDataUrl: z.string(),
+  })
+  .openapi("TotpEnrollment");
+
 export const WorkspacesPayloadSchema = z
   .object({
     workspaces: z.array(WorkspaceSchema),
@@ -115,6 +132,36 @@ export const FolderWithStatsSchema = FolderSchema.extend({
   tokensUsed: z.number().int(),
 }).openapi("FolderWithStats");
 
+export const ContextSourceSchema = z.enum(["TEXT", "UPLOAD", "GENERATION"]);
+
+export const FolderContextSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    folderId: z.string(),
+    source: ContextSourceSchema,
+    label: z.string(),
+    text: z.string(),
+    mediaAssetId: z.string().nullable(),
+    generationId: z.string().nullable(),
+    createdByUserId: z.string().nullable(),
+    isActive: z.boolean(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .openapi("FolderContext");
+
+export const AssetAnalysisSchema = z
+  .object({
+    sourceKind: z.enum(["UPLOAD", "GENERATION"]),
+    sourceId: z.string(),
+    text: z.string(),
+    structured: z.record(z.unknown()),
+    modelId: z.string().nullable(),
+    cached: z.boolean(),
+  })
+  .openapi("AssetAnalysis");
+
 export const GenerationParamsSchema = z.object({
   durationSec: z.number().int().optional(),
   resolution: z.string(),
@@ -132,12 +179,19 @@ export const GenerationSchema = z
     mediaType: MediaTypeSchema,
     rawPrompt: z.string(),
     plannedPrompt: z.string(),
+    planMode: z.boolean(),
+    finalPrompt: z.string(),
+    analysisSnapshot: z.string(),
+    preContextSnapshot: z.string(),
     referenceImageUrl: z.string().nullable(),
     selectedParams: GenerationParamsSchema,
     tokensCharged: z.number().int(),
     status: GenerationStatusSchema,
     externalJobId: z.string().nullable(),
     outputUrl: z.string().nullable(),
+    outputMime: z.string().nullable(),
+    outputSize: z.number().int(),
+    outputPurgedAt: z.string().nullable(),
     errorMessage: z.string().nullable(),
     refunded: z.boolean(),
     createdAt: z.string(),
@@ -157,10 +211,15 @@ export const AiModelSchema = z
     providerId: z.string(),
     code: z.string(),
     displayName: z.string(),
+    providerModelId: z.string(),
     mediaType: MediaTypeSchema,
+    inputCapabilities: z.array(MediaCapabilitySchema),
+    outputCapabilities: z.array(MediaCapabilitySchema),
+    source: z.string(),
     allowedParams: ModelAllowedParamsSchema,
     tokenCost: z.number().int(),
     isActive: z.boolean(),
+    isDefault: z.boolean(),
   })
   .openapi("AiModel");
 
@@ -171,10 +230,35 @@ export const AiProviderSchema = z
     name: z.string(),
     baseUrl: z.string(),
     apiKeyMasked: z.string(),
+    kind: z.enum(["HIGGSFIELD", "OPENAI_COMPATIBLE"]),
+    isFixed: z.boolean(),
+    modelsPath: z.string(),
+    supportsVideoInput: z.boolean(),
+    lastSyncedAt: z.string().nullable(),
+    syncError: z.string().nullable(),
     isActive: z.boolean(),
     updatedAt: z.string(),
   })
   .openapi("AiProvider");
+
+export const RemoteModelSchema = z
+  .object({
+    providerModelId: z.string(),
+    displayName: z.string(),
+    inputCapabilities: z.array(MediaCapabilitySchema),
+    outputCapabilities: z.array(MediaCapabilitySchema),
+    mediaType: MediaTypeSchema,
+  })
+  .openapi("RemoteModel");
+
+export const SyncResultSchema = z
+  .object({
+    added: z.number().int(),
+    updated: z.number().int(),
+    skipped: z.number().int(),
+    models: z.array(AiModelSchema),
+  })
+  .openapi("SyncResult");
 
 export const AdminContactSchema = z
   .object({
@@ -198,6 +282,14 @@ export const PublicConfigSchema = z
     contact: AdminContactSchema,
     pricing: PricingSchema,
     features: z.object({ simulation: z.boolean() }),
+    planModel: z
+      .object({
+        id: z.string(),
+        name: z.string(),
+        inputCapabilities: z.array(MediaCapabilitySchema),
+      })
+      .nullable(),
+    defaults: z.object({ videoModelId: z.string().nullable() }),
   })
   .openapi("PublicConfig");
 
@@ -217,6 +309,10 @@ export const PlanResponseSchema = z
     blueprint: PlanBlueprintSchema,
     cost: PlanCostSchema,
     workspace: WorkspaceSchema,
+    analysis: z.object({
+      attachments: z.array(z.object({ key: z.string(), text: z.string() })),
+      preContext: z.string(),
+    }),
   })
   .openapi("PlanResponse");
 
@@ -229,9 +325,12 @@ export const CreateGenerationResponseSchema = z
 
 export const UploadResponseSchema = z
   .object({
+    id: z.string(),
     url: z.string(),
+    key: z.string(),
     mime: z.string(),
     size: z.number().int(),
+    durationMs: z.number().int().nullable(),
   })
   .openapi("UploadResponse");
 
@@ -269,10 +368,156 @@ export const AdminWorkspacesSchema = z
 
 export const HealthSchema = z
   .object({
-    status: z.literal("ok"),
+    status: z.enum(["ok", "degraded"]),
     db: z.boolean(),
+    redis: z.boolean(),
+    worker: z.boolean(),
   })
   .openapi("Health");
+
+export const StorageDriverSchema = z.enum(["local", "s3"]);
+export const WorkspaceStorageKindSchema = z.enum(["local", "s3", "gdrive"]);
+
+export const StorageSettingsSchema = z
+  .object({
+    driver: StorageDriverSchema,
+    retentionDays: z.number().int(),
+    s3: z.object({
+      endpoint: z.string(),
+      region: z.string(),
+      bucket: z.string(),
+      accessKeyId: z.string(),
+      publicBaseUrl: z.string(),
+      forcePathStyle: z.boolean(),
+      secretAccessKeyMasked: z.string(),
+    }),
+    workspaces: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        driveConnected: z.boolean(),
+        folderIdMasked: z.string(),
+        lastError: z.string().nullable(),
+        connectedAt: z.string().nullable(),
+      }),
+    ),
+  })
+  .openapi("StorageSettings");
+
+export const StorageUsageSchema = z
+  .object({
+    active: z.number().int(),
+    bytes: z.number().int(),
+    expired: z.number().int(),
+  })
+  .openapi("StorageUsage");
+
+export const StorageItemSchema = z
+  .object({
+    id: z.string(),
+    key: z.string(),
+    name: z.string(),
+    mime: z.string(),
+    size: z.number().int(),
+    width: z.number().int().nullable(),
+    height: z.number().int().nullable(),
+    durationMs: z.number().int().nullable(),
+    driver: WorkspaceStorageKindSchema,
+    source: z.enum(["UPLOAD", "GENERATION"]),
+    url: z.string(),
+    generationId: z.string().nullable(),
+    modelName: z.string().nullable(),
+    createdAt: z.string(),
+    purgedAt: z.string().nullable(),
+  })
+  .openapi("StorageItem");
+
+export const StorageListSchema = z
+  .object({
+    items: z.array(StorageItemSchema),
+    nextCursor: z.string().nullable(),
+    totals: z.object({
+      count: z.number().int(),
+      bytes: z.number().int(),
+      images: z.number().int(),
+      videos: z.number().int(),
+    }),
+  })
+  .openapi("StorageList");
+
+export const WorkspaceDriveSchema = z
+  .object({
+    connected: z.boolean(),
+    serviceAccountEmail: z.string(),
+    folderId: z.string(),
+    connectedAt: z.string().nullable(),
+    lastError: z.string().nullable(),
+  })
+  .openapi("WorkspaceDrive");
+
+export const MailSettingsSchema = z
+  .object({
+    driver: z.enum(["smtp", "log"]),
+    fromName: z.string(),
+    fromEmail: z.string(),
+    smtp: z.object({
+      host: z.string(),
+      port: z.number().int(),
+      secure: z.boolean(),
+      user: z.string(),
+      passwordMasked: z.string(),
+    }),
+  })
+  .openapi("MailSettings");
+
+export const PackageSchema = z
+  .object({
+    id: z.string(),
+    tokens: z.number().int(),
+    planQuota: z.number().int(),
+    priceRupiah: z.number().int(),
+  })
+  .openapi("Package");
+
+export const OrderSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    userId: z.string().nullable(),
+    tokens: z.number().int(),
+    planQuota: z.number().int(),
+    amountRupiah: z.number().int(),
+    provider: z.string(),
+    providerRef: z.string().nullable(),
+    status: z.enum(["PENDING", "PAID", "EXPIRED", "FAILED"]),
+    paidAt: z.string().nullable(),
+    createdAt: z.string(),
+  })
+  .openapi("Order");
+
+export const CreateOrderResponseSchema = z
+  .object({
+    order: OrderSchema,
+    redirectUrl: z.string().nullable(),
+  })
+  .openapi("CreateOrderResponse");
+
+export const CmsOrderSchema = OrderSchema.extend({
+  workspaceName: z.string(),
+}).openapi("CmsOrder");
+
+export const AuditLogSchema = z
+  .object({
+    id: z.string(),
+    actorUserId: z.string().nullable(),
+    action: z.string(),
+    targetType: z.string(),
+    targetId: z.string(),
+    metadata: z.record(z.unknown()),
+    ip: z.string(),
+    createdAt: z.string(),
+  })
+  .openapi("AuditLog");
 
 export const ErrorResponseSchema = z
   .object({

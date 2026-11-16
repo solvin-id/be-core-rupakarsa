@@ -23,7 +23,13 @@ const rawSchema = z.object({
   APP_ENCRYPTION_KEY: z.string().default(""),
   STORAGE_DRIVER: z.enum(["local", "r2"]).default("local"),
   STORAGE_LOCAL_DIR: z.string().default("./var/media"),
-  PROVIDER_MODE: z.literal("stub").default("stub"),
+  PROVIDER_MODE: z.enum(["stub", "live"]).default("stub"),
+  RENDER_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  WORKER_HEARTBEAT_SECONDS: z.coerce.number().int().positive().default(10),
+  METRICS_TOKEN: z.string().default(""),
+  MEDIA_URL_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
+  SHUTDOWN_GRACE_SECONDS: z.coerce.number().int().positive().default(25),
+  PUBLIC_CREATOR_URL: z.string().url().default("http://localhost:3000"),
   GENERATION_DRIVER: z.enum(["queue", "inline"]).default("queue"),
   SIMULATION_MODE: z
     .string()

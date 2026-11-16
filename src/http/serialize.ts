@@ -36,6 +36,7 @@ export function toUser(row: UserRow): UserDto {
     role: row.role,
     cmsAccess: row.cmsAccess,
     isActive: row.isActive,
+    totpEnabled: row.totpEnabled,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -105,7 +106,7 @@ export function toFolder(row: FolderRow): FolderDto {
   };
 }
 
-export function toGeneration(row: GenerationRow): GenerationDto {
+export function toGeneration(row: GenerationRow, outputPurgedAt: Date | null = null): GenerationDto {
   return {
     id: row.id,
     workspaceId: row.workspaceId,
@@ -116,12 +117,19 @@ export function toGeneration(row: GenerationRow): GenerationDto {
     mediaType: row.mediaType,
     rawPrompt: row.rawPrompt,
     plannedPrompt: row.plannedPrompt,
+    planMode: row.planMode,
+    finalPrompt: row.finalPrompt,
+    analysisSnapshot: row.analysisSnapshot,
+    preContextSnapshot: row.preContextSnapshot,
     referenceImageUrl: row.referenceImageUrl,
     selectedParams: row.selectedParams,
     tokensCharged: row.tokensCharged,
     status: row.status,
     externalJobId: row.externalJobId,
     outputUrl: row.outputUrl,
+    outputMime: row.outputMime,
+    outputSize: row.outputSize,
+    outputPurgedAt: outputPurgedAt ? outputPurgedAt.toISOString() : null,
     errorMessage: row.errorMessage,
     refunded: row.refunded,
     createdAt: row.createdAt.toISOString(),
@@ -136,20 +144,31 @@ export function toProvider(row: AiProviderRow): AiProviderDto {
     name: row.name,
     baseUrl: row.baseUrl,
     apiKeyMasked: row.apiKeyMasked,
+    kind: row.kind,
+    isFixed: row.isFixed,
+    modelsPath: row.modelsPath,
+    supportsVideoInput: row.supportsVideoInput,
+    lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
+    syncError: row.syncError,
     isActive: row.isActive,
     updatedAt: row.updatedAt.toISOString(),
   };
 }
 
-export function toModel(row: AiModelRow): AiModelDto {
+export function toModel(row: AiModelRow, isDefault = false): AiModelDto {
   return {
     id: row.id,
     providerId: row.providerId,
+    mediaType: row.mediaType,
     code: row.code,
     displayName: row.displayName,
-    mediaType: row.mediaType,
+    providerModelId: row.providerModelId,
+    inputCapabilities: row.inputCapabilities,
+    outputCapabilities: row.outputCapabilities,
+    source: row.source,
     allowedParams: row.allowedParams,
     tokenCost: row.tokenCost,
     isActive: row.isActive,
+    isDefault,
   };
 }

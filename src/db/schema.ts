@@ -30,6 +30,13 @@ export const ledgerTxTypeEnum = pgEnum("ledger_tx_type", [
   "REFUND",
   "ADJUSTMENT",
 ]);
+export const providerKindEnum = pgEnum("provider_kind", ["HIGGSFIELD", "OPENAI_COMPATIBLE"]);
+export const modelCapabilityEnum = pgEnum("model_capability", ["TEXT", "IMAGE", "VIDEO"]);
+export const contextSourceEnum = pgEnum("context_source", ["TEXT", "UPLOAD", "GENERATION"]);
+export const outboxStatusEnum = pgEnum("outbox_status", ["PENDING", "SENT", "FAILED", "SKIPPED"]);
+export const orderStatusEnum = pgEnum("order_status", ["PENDING", "PAID", "EXPIRED", "FAILED"]);
+
+export type ModelCapability = "TEXT" | "IMAGE" | "VIDEO";
 
 export interface ModelAllowedParams {
   durations?: number[];
@@ -54,6 +61,9 @@ export const users = pgTable("users", {
   defaultWorkspaceId: uuid("default_workspace_id").references(() => workspaces.id, {
     onDelete: "set null",
   }),
+  totpSecretEncrypted: text("totp_secret_encrypted").notNull().default(""),
+  totpEnabled: boolean("totp_enabled").notNull().default(false),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -155,6 +165,12 @@ export const aiProviders = pgTable("ai_providers", {
   baseUrl: text("base_url").notNull().default(""),
   apiKeyEncrypted: text("api_key_encrypted").notNull().default(""),
   apiKeyMasked: text("api_key_masked").notNull().default(""),
+  kind: providerKindEnum("kind").notNull().default("OPENAI_COMPATIBLE"),
+  isFixed: boolean("is_fixed").notNull().default(false),
+  modelsPath: text("models_path").notNull().default("/models"),
+  supportsVideoInput: boolean("supports_video_input").notNull().default(false),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+  syncError: text("sync_error"),
   isActive: boolean("is_active").notNull().default(true),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -168,7 +184,21 @@ export const aiModels = pgTable(
       .references(() => aiProviders.id, { onDelete: "restrict" }),
     code: text("code").notNull(),
     displayName: text("display_name").notNull(),
+    providerModelId: text("provider_model_id").notNull().default(""),
     mediaType: mediaTypeEnum("media_type").notNull(),
+    inputCapabilities: modelCapabilityEnum("input_capabilities")
+      .array()
+      .notNull()
+      .default(sql`ARRAY['TEXT']::model_capability[]`),
+    outputCapabilities: modelCapabilityEnum("output_capabilities")
+      .array()
+      .notNull()
+      .default(sql`ARRAY['TEXT']::model_capability[]`),
+    source: text("source").notNull().default("MANUAL"),
+    syncMetadata: jsonb("sync_metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     allowedParams: jsonb("allowed_params").$type<ModelAllowedParams>().notNull(),
     tokenCost: integer("token_cost").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
@@ -195,12 +225,18 @@ export const generations = pgTable(
     mediaType: mediaTypeEnum("media_type").notNull(),
     rawPrompt: text("raw_prompt").notNull(),
     plannedPrompt: text("planned_prompt").notNull().default(""),
+    planMode: boolean("plan_mode").notNull().default(true),
+    finalPrompt: text("final_prompt").notNull().default(""),
+    analysisSnapshot: text("analysis_snapshot").notNull().default(""),
+    preContextSnapshot: text("pre_context_snapshot").notNull().default(""),
     referenceImageUrl: text("reference_image_url"),
     selectedParams: jsonb("selected_params").$type<GenerationParams>().notNull(),
     tokensCharged: integer("tokens_charged").notNull().default(0),
     status: generationStatusEnum("status").notNull().default("QUEUED"),
     externalJobId: text("external_job_id"),
     outputUrl: text("output_url"),
+    outputMime: text("output_mime"),
+    outputSize: integer("output_size").notNull().default(0),
     errorMessage: text("error_message"),
     refunded: boolean("refunded").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -246,14 +282,173 @@ export const planUsages = pgTable(
   (table) => [index("plan_usages_workspace_created_idx").on(table.workspaceId, table.createdAt)],
 );
 
-export const mediaAssets = pgTable("media_assets", {
+export const mediaAssets = pgTable(
+  "media_assets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    key: text("key").notNull().unique(),
+    mime: text("mime").notNull(),
+    size: integer("size").notNull().default(0),
+    driver: text("driver").notNull().default("local"),
+    width: integer("width"),
+    height: integer("height"),
+    durationMs: integer("duration_ms"),
+    checksum: text("checksum"),
+    externalId: text("external_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
+    uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("media_assets_workspace_created_idx").on(table.workspaceId, table.createdAt)],
+);
+
+export const folderContexts = pgTable(
+  "folder_contexts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    folderId: uuid("folder_id")
+      .notNull()
+      .references(() => folders.id, { onDelete: "cascade" }),
+    source: contextSourceEnum("source").notNull().default("TEXT"),
+    label: text("label").notNull().default(""),
+    text: text("text").notNull().default(""),
+    mediaAssetId: uuid("media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
+    generationId: uuid("generation_id").references(() => generations.id, { onDelete: "set null" }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("folder_contexts_folder_created_idx").on(table.folderId, table.createdAt)],
+);
+
+export const assetAnalyses = pgTable(
+  "asset_analyses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    modelId: uuid("model_id").references(() => aiModels.id, { onDelete: "set null" }),
+    inputKinds: text("input_kinds").array().notNull().default(sql`ARRAY[]::text[]`),
+    text: text("text").notNull().default(""),
+    structured: jsonb("structured")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("asset_analyses_source_idx").on(table.sourceKind, table.sourceId)],
+);
+
+export const generationAttachments = pgTable(
+  "generation_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    generationId: uuid("generation_id")
+      .notNull()
+      .references(() => generations.id, { onDelete: "cascade" }),
+    role: text("role").notNull().default("REFERENCE"),
+    mediaAssetId: uuid("media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
+    sourceGenerationId: uuid("source_generation_id").references(() => generations.id, {
+      onDelete: "set null",
+    }),
+    analysisText: text("analysis_text").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("generation_attachments_generation_idx").on(table.generationId)],
+);
+
+export const workspaceStorage = pgTable("workspace_storage", {
+  workspaceId: uuid("workspace_id")
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  serviceAccountEmail: text("service_account_email").notNull().default(""),
+  privateKeyEncrypted: text("private_key_encrypted").notNull().default(""),
+  folderId: text("folder_id").notNull().default(""),
+  connectedByUserId: uuid("connected_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  connectedAt: timestamp("connected_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  lastError: text("last_error"),
+});
+
+export const passwordResetTokens = pgTable("password_reset_tokens", {
   id: uuid("id").primaryKey().defaultRandom(),
-  key: text("key").notNull().unique(),
-  mime: text("mime").notNull(),
-  size: integer("size").notNull().default(0),
-  uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  requestedIp: text("requested_ip").notNull().default(""),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const emailOutbox = pgTable("email_outbox", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  toEmail: text("to_email").notNull(),
+  subject: text("subject").notNull(),
+  bodyHtml: text("body_html").notNull().default(""),
+  bodyText: text("body_text").notNull().default(""),
+  template: text("template").notNull(),
+  status: outboxStatusEnum("status").notNull().default("PENDING"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const orders = pgTable(
+  "orders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    tokens: integer("tokens").notNull().default(0),
+    planQuota: integer("plan_quota").notNull().default(0),
+    amountRupiah: integer("amount_rupiah").notNull().default(0),
+    provider: text("provider").notNull().default("MANUAL"),
+    providerRef: text("provider_ref"),
+    status: orderStatusEnum("status").notNull().default("PENDING"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("orders_workspace_created_idx").on(table.workspaceId, table.createdAt),
+    uniqueIndex("orders_provider_ref_idx").on(table.providerRef),
+  ],
+);
+
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    actorUserId: uuid("actor_user_id"),
+    action: text("action").notNull(),
+    targetType: text("target_type").notNull().default(""),
+    targetId: text("target_id").notNull().default(""),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    ip: text("ip").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("audit_logs_created_idx").on(table.createdAt)],
+);
 
 export const appSettings = pgTable("app_settings", {
   key: text("key").primaryKey(),
@@ -282,3 +477,11 @@ export type AiProviderRow = typeof aiProviders.$inferSelect;
 export type AiModelRow = typeof aiModels.$inferSelect;
 export type GenerationRow = typeof generations.$inferSelect;
 export type MediaAssetRow = typeof mediaAssets.$inferSelect;
+export type FolderContextRow = typeof folderContexts.$inferSelect;
+export type AssetAnalysisRow = typeof assetAnalyses.$inferSelect;
+export type GenerationAttachmentRow = typeof generationAttachments.$inferSelect;
+export type WorkspaceStorageRow = typeof workspaceStorage.$inferSelect;
+export type PasswordResetTokenRow = typeof passwordResetTokens.$inferSelect;
+export type EmailOutboxRow = typeof emailOutbox.$inferSelect;
+export type OrderRow = typeof orders.$inferSelect;
+export type AuditLogRow = typeof auditLogs.$inferSelect;
