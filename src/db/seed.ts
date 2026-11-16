@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { hashPassword } from "../auth/password.js";
 import type { Tx } from "./client.js";
@@ -8,7 +8,6 @@ import {
   aiProviders,
   folders,
   generations,
-  planUsages,
   tokenLedger,
   users,
   workspaceJoinRequests,
@@ -716,22 +715,6 @@ export async function seedDemo(tx: Tx): Promise<void> {
       createdAt: new Date("2026-11-01T10:10:00.000Z"),
     });
   }
-
-  const planUsageExists = await tx
-    .select({ id: planUsages.id })
-    .from(planUsages)
-    .where(eq(planUsages.workspaceId, IDS.workspace.alfateve))
-    .limit(1);
-
-  if (planUsageExists.length === 0) {
-    await tx.insert(planUsages).values({
-      workspaceId: IDS.workspace.alfateve,
-      userId: IDS.user.demo,
-      usedFreeQuota: true,
-      tokensCharged: 0,
-      createdAt: new Date("2026-11-12T12:40:00.000Z"),
-    });
-  }
 }
 
 interface SeedOptions {
@@ -739,17 +722,18 @@ interface SeedOptions {
 }
 
 export async function runSeed(options: SeedOptions): Promise<string[]> {
-  return await db.transaction(async (tx) => {
+  await db.transaction(async (tx) => {
     await seedPlatform(tx);
     if (options.demo) await seedDemo(tx);
-
-    const rows = await tx
-      .select({ email: users.email, role: users.role })
-      .from(users)
-      .orderBy(sql`${users.createdAt} asc`);
-
-    return rows.map((row) => row.email);
   });
+
+  const lines = [`${env.SEED_SUPERADMIN_EMAIL.toLowerCase()}: ${env.SEED_SUPERADMIN_PASSWORD}`];
+  if (options.demo) {
+    for (const account of DEMO_ACCOUNTS) {
+      lines.push(`${account.email}: ${env.DEMO_SEED_PASSWORD}`);
+    }
+  }
+  return lines;
 }
 
 async function main(): Promise<void> {
@@ -766,13 +750,8 @@ async function main(): Promise<void> {
   }
 
   const demo = env.NODE_ENV !== "production" && !noDemo;
-  const emails = await runSeed({ demo });
+  const lines = await runSeed({ demo });
 
-  const lines = emails.map((email) =>
-    email === env.SEED_SUPERADMIN_EMAIL.toLowerCase()
-      ? `${email}: ${env.SEED_SUPERADMIN_PASSWORD}`
-      : `${email}: ${env.DEMO_SEED_PASSWORD}`,
-  );
   for (const line of lines) console.log(line);
   if (!demo) console.log("(demo dataset skipped)");
 }
