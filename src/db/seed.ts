@@ -86,7 +86,7 @@ const PROVIDERS: ProviderSeed[] = [
   {
     code: "KENARI_AI",
     name: "Kenari AI",
-    baseUrl: "https://api.kenariai.com/v1",
+    baseUrl: "https://kenari.id/v1",
     kind: "OPENAI_COMPATIBLE",
     isFixed: false,
     modelsPath: "/models",

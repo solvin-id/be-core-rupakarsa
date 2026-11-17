@@ -5,7 +5,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { db } from "../../src/db/client.js";
-import { aiProviders } from "../../src/db/schema.js";
+import { aiModels, aiProviders } from "../../src/db/schema.js";
 import { env } from "../../src/env.js";
 import { eq } from "drizzle-orm";
 import { createClient, jsonBody, login, resetDatabase } from "./helpers.js";
@@ -30,6 +30,22 @@ beforeAll(async () => {
           architecture: { input_modalities: ["TEXT"], output_modalities: ["IMAGE"] },
         },
         { id: "txt-1", name: "Text One", architecture: { output_modalities: ["TEXT"] } },
+      ],
+    }),
+  );
+
+  // kenari publishes capabilities as `modalities` plus the render options it accepts.
+  app.get("/v2/models", (c) =>
+    c.json({
+      data: [
+        {
+          id: "veo-3.1-lite",
+          name: "Veo 3.1 Lite",
+          modalities: { input: ["text", "image"], output: ["video"] },
+          video_durations: [8],
+          video_resolutions: ["720p"],
+        },
+        { id: "beam-1-0:free", name: "Beam 1.0", modalities: { input: ["text"], output: ["text"] } },
       ],
     }),
   );
@@ -150,6 +166,42 @@ describe("provider model sync", () => {
     expect(response.body.error.message).toBe("Provider tetap tidak dapat dihapus.");
   });
 
+  it("reads kenari-style modalities and keeps the render options the catalog publishes", async () => {
+    const client = await adminClient();
+    const created = await client.json<{ id: string }>(
+      "/api/cms/providers",
+      jsonBody({
+        name: "Kenari Shape",
+        code: "kenari-shape",
+        baseUrl: `${baseUrl.replace(/\/v1$/, "")}/v2`,
+        apiKey: "kn-test-key",
+        modelsPath: "/models",
+        isActive: true,
+      }),
+    );
+    expect(created.status).toBe(201);
+
+    const tested = await client.json<{ ok: boolean; message: string }>(
+      `/api/cms/providers/${created.body.id}/test`,
+      { method: "POST" },
+    );
+    expect(tested.body.ok).toBe(true);
+    expect(tested.body.message).toContain("1 model terdeteksi");
+
+    const synced = await client.json<{ added: number; skipped: number }>(
+      `/api/cms/providers/${created.body.id}/sync-models`,
+      { method: "POST" },
+    );
+    expect(synced.body.added).toBe(1);
+    expect(synced.body.skipped).toBe(1);
+
+    const [row] = await db.select().from(aiModels).where(eq(aiModels.providerId, created.body.id));
+    expect(row?.code).toBe("veo-3.1-lite");
+    expect(row?.mediaType).toBe("VIDEO");
+    expect(row?.inputCapabilities).toEqual(["TEXT", "IMAGE"]);
+    expect(row?.allowedParams).toEqual({ durations: [8], resolutions: ["720p"], aspectRatios: ["16:9", "9:16", "1:1"] });
+  });
+
   it("reports the upstream error and stores syncError when the publisher is unreachable", async () => {
     const client = await adminClient();
     const created = await client.json<{ id: string }>(
@@ -157,7 +209,7 @@ describe("provider model sync", () => {
       jsonBody({
         name: "Broken Publisher",
         code: "broken",
-        baseUrl: "http://127.0.0.1:9/v1",
+        baseUrl: "http://127.0.0.1:54321/v1",
         apiKey: "mock-secret-key",
         modelsPath: "/models",
         isActive: true,
@@ -170,8 +222,10 @@ describe("provider model sync", () => {
     );
     expect(failed.status).toBe(502);
     expect(failed.body.error.code).toBe("PROVIDER_UNREACHABLE");
+    // The operator must see why, not undici's "fetch failed".
+    expect(failed.body.error.message).toBe("Koneksi ke 127.0.0.1:54321 ditolak.");
 
     const [row] = await db.select().from(aiProviders).where(eq(aiProviders.id, created.body.id)).limit(1);
-    expect(row?.syncError).toBeTruthy();
+    expect(row?.syncError).toBe("Koneksi ke 127.0.0.1:54321 ditolak.");
   });
 });

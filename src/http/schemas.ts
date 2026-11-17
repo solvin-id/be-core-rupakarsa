@@ -248,6 +248,8 @@ export const RemoteModelSchema = z
     inputCapabilities: z.array(MediaCapabilitySchema),
     outputCapabilities: z.array(MediaCapabilitySchema),
     mediaType: MediaTypeSchema,
+    durations: z.array(z.number().int()),
+    resolutions: z.array(z.string()),
   })
   .openapi("RemoteModel");
 

@@ -48,7 +48,7 @@ const rawSchema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().default(""),
   R2_BUCKET: z.string().default(""),
   R2_PUBLIC_BASE_URL: z.string().default(""),
-  KENARI_BASE_URL: z.string().default("https://api.kenariai.com/v1"),
+  KENARI_BASE_URL: z.string().default("https://kenari.id/v1"),
   KENARI_API_KEY: z.string().default(""),
   HIGGSFIELD_BASE_URL: z.string().default("https://platform.higgsfield.ai"),
   HIGGSFIELD_KEY_ID: z.string().default(""),

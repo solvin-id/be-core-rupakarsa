@@ -12,6 +12,7 @@ import type {
 import { env } from "../env.js";
 import { AppError, notFound } from "../http/errors.js";
 import { templatesForProvider } from "./model-catalog.js";
+import { describeProviderFailure } from "./provider-failure.js";
 
 const SYNC_TIMEOUT_MS = 15_000;
 
@@ -21,6 +22,9 @@ export interface RemoteModel {
   inputCapabilities: ModelCapability[];
   outputCapabilities: ModelCapability[];
   mediaType: "VIDEO" | "IMAGE";
+  /** Publisher-declared render options; empty when the payload does not advertise them. */
+  durations: number[];
+  resolutions: string[];
 }
 
 export interface RemoteCatalog {
@@ -40,6 +44,20 @@ const DEFAULT_ALLOWED_PARAMS: Record<"VIDEO" | "IMAGE", ModelAllowedParams> = {
   VIDEO: { durations: [5], resolutions: ["auto"], aspectRatios: ["16:9", "9:16", "1:1"] },
   IMAGE: { resolutions: ["1k"], aspectRatios: ["1:1", "4:3", "16:9", "9:16"] },
 };
+
+/**
+ * Publishers that advertise render options (kenari: video_durations / video_resolutions) must not be
+ * driven with the generic defaults, or every render asks for a duration the model cannot produce.
+ */
+function allowedParamsFor(model: RemoteModel): ModelAllowedParams | null {
+  const defaults = DEFAULT_ALLOWED_PARAMS[model.mediaType];
+  if (model.durations.length === 0 && model.resolutions.length === 0) return null;
+  return {
+    durations: model.durations.length > 0 ? model.durations : (defaults.durations ?? []),
+    resolutions: model.resolutions.length > 0 ? model.resolutions : defaults.resolutions,
+    aspectRatios: defaults.aspectRatios,
+  };
+}
 
 function normalizeCapability(value: unknown): ModelCapability | null {
   if (typeof value !== "string") return null;
@@ -89,14 +107,43 @@ interface RawRemoteEntry {
   architecture?: { input_modalities?: unknown; output_modalities?: unknown };
   input_modalities?: unknown;
   output_modalities?: unknown;
+  /** kenari (and OpenAI-compatible gateways) publish capabilities here. */
+  modalities?: { input?: unknown; output?: unknown };
+  video_durations?: unknown;
+  video_resolutions?: unknown;
 }
 
-function toRemoteModel(entry: RawRemoteEntry): RemoteModel | null {
+function positiveInts(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const values: number[] = [];
+  for (const item of raw) {
+    const value = typeof item === "number" ? item : Number(item);
+    if (Number.isInteger(value) && value > 0 && !values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
+function nonEmptyStrings(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const values: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const value = item.trim();
+    if (value.length > 0 && !values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
+export function toRemoteModel(entry: RawRemoteEntry): RemoteModel | null {
   if (typeof entry.id !== "string" || entry.id.trim().length === 0) return null;
   const providerModelId = entry.id.trim();
 
-  const inputs = capabilitiesFrom(entry.architecture?.input_modalities ?? entry.input_modalities);
-  const outputs = capabilitiesFrom(entry.architecture?.output_modalities ?? entry.output_modalities);
+  const inputs = capabilitiesFrom(
+    entry.architecture?.input_modalities ?? entry.input_modalities ?? entry.modalities?.input,
+  );
+  const outputs = capabilitiesFrom(
+    entry.architecture?.output_modalities ?? entry.output_modalities ?? entry.modalities?.output,
+  );
 
   const mediaType: "VIDEO" | "IMAGE" | null = outputs.includes("VIDEO")
     ? "VIDEO"
@@ -111,6 +158,8 @@ function toRemoteModel(entry: RawRemoteEntry): RemoteModel | null {
     inputCapabilities: inputs.length > 0 ? inputs : ["TEXT"],
     outputCapabilities: outputs,
     mediaType,
+    durations: positiveInts(entry.video_durations),
+    resolutions: nonEmptyStrings(entry.video_resolutions),
   };
 }
 
@@ -121,6 +170,8 @@ function templateCatalog(provider: AiProviderRow): RemoteCatalog {
     inputCapabilities: ["TEXT", "IMAGE"],
     outputCapabilities: [template.mediaType],
     mediaType: template.mediaType,
+    durations: template.allowedParams.durations ?? [],
+    resolutions: template.allowedParams.resolutions ?? [],
   }));
   return { models, skipped: 0 };
 }
@@ -139,8 +190,7 @@ export async function fetchRemoteCatalog(provider: AiProviderRow): Promise<Remot
       signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Tidak dapat menghubungi provider.";
-    throw new AppError(502, "PROVIDER_UNREACHABLE", message);
+    throw new AppError(502, "PROVIDER_UNREACHABLE", describeProviderFailure(error, url, SYNC_TIMEOUT_MS));
   }
 
   if (!response.ok) {
@@ -217,7 +267,8 @@ export async function syncProviderModels(db: DbHandle, providerId: string): Prom
           inputCapabilities: model.inputCapabilities,
           outputCapabilities: model.outputCapabilities,
         },
-        allowedParams: template?.allowedParams ?? DEFAULT_ALLOWED_PARAMS[model.mediaType],
+        allowedParams:
+          template?.allowedParams ?? allowedParamsFor(model) ?? DEFAULT_ALLOWED_PARAMS[model.mediaType],
         tokenCost: template?.tokenCost ?? 0,
         isActive: true,
       })

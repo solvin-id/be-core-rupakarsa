@@ -8,6 +8,7 @@ import type {
   RenderResult,
 } from "./types.js";
 import { joinUrl, resolveProviderKey } from "../services/model-sync-service.js";
+import { describeProviderFailure } from "../services/provider-failure.js";
 
 const REQUEST_TIMEOUT_MS = 120_000;
 const RETRY_DELAY_MS = 2_000;
@@ -46,8 +47,7 @@ async function postJson(
     }
   }
   if (signal.aborted) throw new AppError(504, "PROVIDER_TIMEOUT", "Render melewati batas waktu.");
-  const message = lastError instanceof Error ? lastError.message : "Provider tidak dapat dihubungi.";
-  throw new AppError(502, "PROVIDER_ERROR", message);
+  throw new AppError(502, "PROVIDER_ERROR", describeProviderFailure(lastError, url, REQUEST_TIMEOUT_MS));
 }
 
 /** One adapter for every OpenAI-compatible publisher (DeepSeek, OpenRouter, vLLM, ...). */
