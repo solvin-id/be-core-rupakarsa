@@ -67,6 +67,33 @@ export async function createSession(
   return { session, token };
 }
 
+function cookieAttributes(): {
+  sameSite: "Lax";
+  secure: boolean;
+  domain: string | undefined;
+  path: string;
+  maxAge: number;
+} {
+  return {
+    sameSite: "Lax",
+    secure: env.NODE_ENV === "production",
+    domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
+    path: "/",
+    maxAge: env.SESSION_TTL_DAYS * 24 * 60 * 60,
+  };
+}
+
+/**
+ * Mints the page-readable double-submit token. Sessions created before this cookie existed carry no
+ * csrf value, and the page can neither read nor send one, so `csrfMiddleware` also calls this when a
+ * browser presents a session cookie without it.
+ */
+export function writeCsrfCookie(c: Context): string {
+  const token = randomBytes(18).toString("base64url");
+  setCookie(c, CSRF_COOKIE, token, { ...cookieAttributes(), httpOnly: false });
+  return token;
+}
+
 export function writeSessionCookie(c: Context, token: string): void {
   // A deploy that ran before COOKIE_DOMAIN was set left host-only cookies on the API host. They are
   // still sent (and sort first), so expire them here; only the shared domain cookie remains.
@@ -74,22 +101,8 @@ export function writeSessionCookie(c: Context, token: string): void {
     deleteCookie(c, SESSION_COOKIE, { path: "/" });
     deleteCookie(c, CSRF_COOKIE, { path: "/" });
   }
-  setCookie(c, SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "Lax",
-    secure: env.NODE_ENV === "production",
-    domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
-    path: "/",
-    maxAge: env.SESSION_TTL_DAYS * 24 * 60 * 60,
-  });
-  setCookie(c, CSRF_COOKIE, randomBytes(18).toString("base64url"), {
-    httpOnly: false,
-    sameSite: "Lax",
-    secure: env.NODE_ENV === "production",
-    domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
-    path: "/",
-    maxAge: env.SESSION_TTL_DAYS * 24 * 60 * 60,
-  });
+  setCookie(c, SESSION_COOKIE, token, { ...cookieAttributes(), httpOnly: true });
+  writeCsrfCookie(c);
 }
 
 export function clearSessionCookie(c: Context): void {

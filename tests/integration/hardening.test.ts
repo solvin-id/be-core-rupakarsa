@@ -59,6 +59,68 @@ describe("hardening", () => {
     expect(withHeader.status).toBe(200);
   });
 
+  it("heals a session that was minted before the csrf cookie existed", async () => {
+    await createAccount({ email: "legacy-csrf@example.test" });
+    const client = createClient();
+    await login(client, "legacy-csrf@example.test");
+    // What an old session's browser actually sends: the httpOnly session cookie and nothing else.
+    const sessionOnly =
+      client
+        .cookie()
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("rupakarsa_session=")) ?? "";
+    expect(sessionOnly.length).toBeGreaterThan(0);
+
+    const app = createApp();
+
+    const pageLoad = await app.request("/api/creator/folders", { headers: { cookie: sessionOnly } });
+    expect(pageLoad.status).toBe(200);
+    const issued = (pageLoad.headers.getSetCookie?.() ?? [])
+      .map((raw) => /^rupakarsa_csrf=([^;]+)/.exec(raw)?.[1] ?? "")
+      .find((value) => value.length > 0);
+    expect(issued).toBeTruthy();
+
+    // The healed token is what the browser stores and echoes on its next action.
+    const healed = await app.request("/api/creator/folders", {
+      method: "POST",
+      headers: {
+        cookie: `${sessionOnly}; rupakarsa_csrf=${issued}`,
+        "content-type": "application/json",
+        "x-csrf-token": issued ?? "",
+      },
+      body: JSON.stringify({ name: "Setelah pulih" }),
+    });
+    expect(healed.status).toBe(201);
+
+    // Without any cookie to echo the request still fails, but the rejection now issues one, so a
+    // single retry completes instead of looping on "muat ulang halaman".
+    const rejected = await app.request("/api/creator/folders", {
+      method: "POST",
+      headers: { cookie: sessionOnly, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Percobaan pertama" }),
+    });
+    expect(rejected.status).toBe(403);
+    const rejection = (await rejected.json()) as { error: { code: string; message: string } };
+    expect(rejection.error.code).toBe("CSRF_INVALID");
+    expect(rejection.error.message).toBe("Token CSRF tidak valid. Muat ulang halaman.");
+    const retryToken = (rejected.headers.getSetCookie?.() ?? [])
+      .map((raw) => /^rupakarsa_csrf=([^;]+)/.exec(raw)?.[1] ?? "")
+      .find((value) => value.length > 0);
+    expect(retryToken).toBeTruthy();
+
+    const retried = await app.request("/api/creator/folders", {
+      method: "POST",
+      headers: {
+        cookie: `${sessionOnly}; rupakarsa_csrf=${retryToken}`,
+        "content-type": "application/json",
+        "x-csrf-token": retryToken ?? "",
+      },
+      body: JSON.stringify({ name: "Percobaan kedua" }),
+    });
+    expect(retried.status).toBe(201);
+  });
+
   it("accepts the csrf cookie the browser can read when a stale duplicate exists", async () => {
     await createAccount({ email: "dup-csrf@example.test" });
     const client = createClient();

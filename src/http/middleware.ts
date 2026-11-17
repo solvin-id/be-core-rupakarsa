@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 
-import { CSRF_COOKIE, SESSION_COOKIE, cookieValues } from "../auth/session.js";
+import { CSRF_COOKIE, SESSION_COOKIE, cookieValues, writeCsrfCookie } from "../auth/session.js";
 import { env } from "../env.js";
 import { AppError, forbidden } from "./errors.js";
 import { logger } from "../logger.js";
@@ -73,18 +73,23 @@ export function corsMiddleware(): MiddlewareHandler<AppBindings> {
 export function csrfMiddleware(): MiddlewareHandler<AppBindings> {
   return async (c, next) => {
     const method = c.req.method.toUpperCase();
+    const hasSession = cookieValues(c, SESSION_COOKIE).length > 0;
+    const csrfValues = cookieValues(c, CSRF_COOKIE);
+
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
       await next();
+      // A session minted before this cookie existed can never pass the check on its own: the page
+      // cannot read a token that was never issued. Issue one here so the next action just works.
+      if (hasSession && csrfValues.length === 0) writeCsrfCookie(c);
       return;
     }
 
-    if (cookieValues(c, SESSION_COOKIE).length === 0) {
+    if (!hasSession) {
       await next();
       return;
     }
 
     const headerToken = c.req.header("x-csrf-token") ?? "";
-    const csrfValues = cookieValues(c, CSRF_COOKIE);
     if (headerToken.length === 0 || !csrfValues.includes(headerToken)) {
       // Counts only: whether the browser sent 0, 1 or several csrf cookies decides the fix.
       logger.warn(
@@ -98,7 +103,10 @@ export function csrfMiddleware(): MiddlewareHandler<AppBindings> {
         },
         "csrf rejected",
       );
-      throw forbidden("Token CSRF tidak valid. Muat ulang halaman.");
+      // No cookie at all means the browser has nothing to echo: hand it one so an immediate retry
+      // succeeds. A present-but-mismatched cookie is a real attack signal and stays untouched.
+      if (csrfValues.length === 0) writeCsrfCookie(c);
+      throw new AppError(403, "CSRF_INVALID", "Token CSRF tidak valid. Muat ulang halaman.");
     }
     await next();
   };
