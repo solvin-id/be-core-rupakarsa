@@ -1,6 +1,19 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 
-import type { PutResult, StorageDriver, StoredObject } from "../adapters/types.js";
+import type {
+  ByteRange,
+  PutResult,
+  StorageDriver,
+  StoredObject,
+  StoredObjectMeta,
+  StoredRange,
+} from "../adapters/types.js";
 import { env } from "../env.js";
 import { assertSafeKey, mimeFor } from "./local-driver.js";
 
@@ -75,6 +88,46 @@ export class S3StorageDriver implements StorageDriver {
       const bytes = result.Body ? Buffer.from(await result.Body.transformToByteArray()) : null;
       if (!bytes) return null;
       return { bytes, mime: result.ContentType ?? mimeFor(key) };
+    } catch {
+      return null;
+    }
+  }
+
+  async stat(key: string): Promise<StoredObjectMeta | null> {
+    try {
+      assertSafeKey(key);
+      const result = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      if (typeof result.ContentLength !== "number") return null;
+      return { size: result.ContentLength, mime: result.ContentType ?? mimeFor(key) };
+    } catch {
+      return null;
+    }
+  }
+
+  async readRange(key: string, range: ByteRange): Promise<StoredRange | null> {
+    try {
+      assertSafeKey(key);
+      const result = await this.client.send(
+        new GetObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Range: `bytes=${range.start}-${range.end}`,
+        }),
+      );
+      const bytes = result.Body ? Buffer.from(await result.Body.transformToByteArray()) : null;
+      if (!bytes) return null;
+      // A ranged GET always carries the full object length; fall back to the slice when absent.
+      const size =
+        typeof result.ContentLength === "number"
+          ? result.ContentLength
+          : Number(result.ContentRange?.split("/")[1] ?? bytes.byteLength);
+      return {
+        bytes,
+        mime: result.ContentType ?? mimeFor(key),
+        size: Number.isFinite(size) ? size : bytes.byteLength,
+      };
     } catch {
       return null;
     }

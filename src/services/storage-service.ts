@@ -179,7 +179,7 @@ function absoluteUrl(driver: StorageDriver, key: string): string {
   return `${env.PUBLIC_API_URL}/media/${key}`;
 }
 
-/** `generations/` keys are immutable-public; `uploads/` keys always carry a signature. */
+/** `generations/` keys need a session, `uploads/` keys always carry a signature — see routes/media. */
 export function publicUrlFor(key: string, driver: StorageDriver): string {
   if (isPublicGenerationKey(key)) return absoluteUrl(driver, key);
   return signMediaUrl(key, env.MEDIA_URL_TTL_SECONDS);

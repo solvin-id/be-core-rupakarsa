@@ -434,7 +434,7 @@ export function extensionForMime(mime: string): string {
   return MIME_EXTENSIONS[mime] ?? "bin";
 }
 
-/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — public and immutable. */
+/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — immutable, session-scoped. */
 export function generationOutputKey(workspaceId: string, generationId: string, mime: string): string {
   return `workspaces/${workspaceId}/generations/${generationId}.${extensionForMime(mime)}`;
 }

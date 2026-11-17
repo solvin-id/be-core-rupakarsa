@@ -1,7 +1,14 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import type { PutResult, StorageDriver, StoredObject } from "../adapters/types.js";
+import type {
+  ByteRange,
+  PutResult,
+  StorageDriver,
+  StoredObject,
+  StoredObjectMeta,
+  StoredRange,
+} from "../adapters/types.js";
 
 const KEY_PATTERN = /^[a-zA-Z0-9/_.-]+$/;
 
@@ -48,6 +55,40 @@ export class LocalStorageDriver implements StorageDriver {
       return { bytes, mime: mimeFor(key) };
     } catch {
       return null;
+    }
+  }
+
+  async stat(key: string): Promise<StoredObjectMeta | null> {
+    let target: string;
+    try {
+      target = this.resolveKey(key);
+    } catch {
+      return null;
+    }
+    try {
+      const info = await stat(target);
+      if (!info.isFile()) return null;
+      return { size: info.size, mime: mimeFor(key) };
+    } catch {
+      return null;
+    }
+  }
+
+  async readRange(key: string, range: ByteRange): Promise<StoredRange | null> {
+    const meta = await this.stat(key);
+    if (!meta) return null;
+
+    const start = Math.max(0, Math.min(range.start, meta.size - 1));
+    const end = Math.max(start, Math.min(range.end, meta.size - 1));
+    const length = end - start + 1;
+
+    const handle = await open(this.resolveKey(key), "r");
+    try {
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      return { bytes: buffer, mime: meta.mime, size: meta.size };
+    } finally {
+      await handle.close();
     }
   }
 

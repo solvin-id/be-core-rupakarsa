@@ -40,6 +40,24 @@ export interface StoredObject {
   mime: string;
 }
 
+export interface StoredObjectMeta {
+  size: number;
+  mime: string;
+}
+
+export interface ByteRange {
+  /** Inclusive first byte. */
+  start: number;
+  /** Inclusive last byte, already clamped to `size - 1`. */
+  end: number;
+}
+
+export interface StoredRange {
+  bytes: Buffer;
+  mime: string;
+  size: number;
+}
+
 export interface PutResult {
   /** Provider-side identifier (S3 ETag, Drive file id). */
   externalId?: string;
@@ -50,6 +68,14 @@ export interface StorageDriver {
   url(key: string): string;
   read(key: string, externalId?: string | null): Promise<StoredObject | null>;
   remove(key: string, externalId?: string | null): Promise<void>;
+  /** Optional: size + mime without transferring the body, which enables `Range` playback. */
+  stat?(key: string, externalId?: string | null): Promise<StoredObjectMeta | null>;
+  /** Optional: one byte range of the object; absent drivers fall back to a full read. */
+  readRange?(
+    key: string,
+    range: ByteRange,
+    externalId?: string | null,
+  ): Promise<StoredRange | null>;
 }
 
 export interface PlanAdapter {
