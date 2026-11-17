@@ -18,6 +18,8 @@ const SYNC_TIMEOUT_MS = 15_000;
 
 export interface RemoteModel {
   providerModelId: string;
+  /** Stable catalog code when the provider id differs; never serialized to the CMS preview. */
+  catalogCode?: string;
   displayName: string;
   inputCapabilities: ModelCapability[];
   outputCapabilities: ModelCapability[];
@@ -174,6 +176,7 @@ export function toRemoteModel(entry: RawRemoteEntry): RemoteModel | null {
 function templateCatalog(provider: AiProviderRow): RemoteCatalog {
   const models = templatesForProvider(provider.code).map<RemoteModel>((template) => ({
     providerModelId: template.providerModelId ?? template.code,
+    catalogCode: template.code,
     displayName: template.displayName,
     inputCapabilities: ["TEXT", "IMAGE"],
     outputCapabilities: [template.mediaType],
@@ -255,11 +258,14 @@ export async function syncProviderModels(db: DbHandle, providerId: string): Prom
   let added = 0;
   let updated = 0;
   for (const model of catalog.models) {
-    const template = templatesForProvider(provider.code).find(
-      (entry) => (entry.providerModelId ?? entry.code) === model.providerModelId,
-    );
-    // A template may publish a provider id that differs from its stable catalog code.
-    const code = template?.code ?? model.providerModelId;
+    // A template may publish a provider id that differs from its stable catalog code, and two
+    // templates can share one endpoint (Wan 5s and 10s), so the code travels with the catalog entry.
+    const code = model.catalogCode ?? model.providerModelId;
+    const template =
+      templatesForProvider(provider.code).find((entry) => entry.code === code) ??
+      templatesForProvider(provider.code).find(
+        (entry) => (entry.providerModelId ?? entry.code) === model.providerModelId,
+      );
 
     // Workflows differ in the fields they accept (higgsfield rejects what a model does not declare),
     // so the template's request fields travel with the row the adapter reads.

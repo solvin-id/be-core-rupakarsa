@@ -309,7 +309,11 @@ cmsProviderRoutes.openapi(remoteModelsRoute, async (c) => {
   const [provider] = await db.select().from(aiProviders).where(eq(aiProviders.id, id)).limit(1);
   if (!provider) throw notFound("Provider tidak ditemukan.");
   const catalog = await fetchRemoteCatalog(provider);
-  return c.json({ models: catalog.models }, 200);
+  // `catalogCode` is an internal mapping for sync; the preview only describes the provider catalog.
+  return c.json(
+    { models: catalog.models.map(({ catalogCode: _catalogCode, ...model }) => model) },
+    200,
+  );
 });
 
 const syncModelsRoute = createRoute({

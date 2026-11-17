@@ -73,6 +73,7 @@ interface SyncBody {
   skipped: number;
   models: Array<{
     code: string;
+    providerModelId: string;
     outputCapabilities: string[];
     mediaType: string;
     allowedParams: { resolutions: string[]; aspectRatios: string[] };
@@ -164,6 +165,43 @@ describe("provider model sync", () => {
       `/api/cms/models?output=VIDEO&providerId=${created.body.id}`,
     );
     expect(afterSync.body[0]).toMatchObject({ id: modelId, tokenCost: 12, isActive: false, source: "SYNC" });
+  });
+
+  it("keeps catalog codes stable when a workflow endpoint is shared", async () => {
+    const client = await adminClient();
+    const providers = await client.json<Array<{ id: string; code: string }>>("/api/cms/providers");
+    const fixed = providers.body.find((row) => row.code === "HIGGSFIELD");
+    expect(fixed).toBeDefined();
+
+    const first = await client.json<SyncBody>(`/api/cms/providers/${fixed?.id}/sync-models`, {
+      method: "POST",
+    });
+    expect(first.status).toBe(200);
+    // The seed already created every template row, so a sync only rewrites their provider ids.
+    expect(first.body.added).toBe(0);
+    expect(first.body.updated).toBe(9);
+
+    const endpoint = "alibaba/wan-3.0/text-to-video";
+    const wan = first.body.models
+      .filter((row) => row.code === "wan-qwen-5s" || row.code === "wan-qwen-10s")
+      .sort((a, b) => a.code.localeCompare(b.code));
+    expect(wan.map((row) => row.code)).toEqual(["wan-qwen-10s", "wan-qwen-5s"]);
+    expect(wan.every((row) => row.providerModelId === endpoint)).toBe(true);
+
+    const second = await client.json<SyncBody>(`/api/cms/providers/${fixed?.id}/sync-models`, {
+      method: "POST",
+    });
+    expect(second.body.added).toBe(0);
+    expect(second.body.updated).toBe(9);
+    expect(second.body.models).toHaveLength(9);
+
+    const kling = await db
+      .select()
+      .from(aiModels)
+      .where(eq(aiModels.code, "kling-2.6-pro"))
+      .limit(1);
+    expect(kling[0]?.providerModelId).toBe("kling-video/v2.6/pro/text-to-video");
+    expect(kling[0]?.syncMetadata).toMatchObject({ requestFields: ["duration", "aspectRatio"] });
   });
 
   it("refuses to delete the fixed provider", async () => {
