@@ -80,7 +80,13 @@ export function csrfMiddleware(): MiddlewareHandler<AppBindings> {
       await next();
       // A session minted before this cookie existed can never pass the check on its own: the page
       // cannot read a token that was never issued. Issue one here so the next action just works.
-      if (hasSession && csrfValues.length === 0) writeCsrfCookie(c);
+      if (hasSession && csrfValues.length === 0) {
+        writeCsrfCookie(c);
+        logger.info(
+          { requestId: c.get("requestId"), event: "csrf.healed", path: c.req.path },
+          "csrf cookie issued",
+        );
+      }
       return;
     }
 
