@@ -13,10 +13,11 @@ import {
   AiModelSchema,
   ErrorResponseSchema,
   MediaCapabilitySchema,
-  MediaTypeSchema,
   ModelAllowedParamsSchema,
+  ModelMediaTypeSchema,
   ModelTemplateSchema,
 } from "../../http/schemas.js";
+import type { ModelMediaType } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
 import { logAudit } from "../../services/audit-service.js";
 
@@ -29,7 +30,12 @@ cmsModelRoutes.use("/models", sessionGuard(), requireCms());
 cmsModelRoutes.use("/models/*", sessionGuard(), requireCms());
 cmsModelRoutes.use("/model-templates", sessionGuard(), requireCms());
 
-function assertAllowedParams(value: { resolutions: string[]; aspectRatios: string[] }): void {
+function assertAllowedParams(
+  value: { resolutions: string[]; aspectRatios: string[] },
+  mediaType?: ModelMediaType,
+): void {
+  // Plan/analysis models carry no render options; an empty pair is their normal shape.
+  if (mediaType === "TEXT") return;
   if (value.resolutions.length === 0 || value.aspectRatios.length === 0) {
     throw validation("Resolusi dan rasio aspek tidak boleh kosong.");
   }
@@ -149,7 +155,7 @@ const createModelRoute = createRoute({
             code: z.string(),
             displayName: z.string(),
             providerModelId: z.string().optional(),
-            mediaType: MediaTypeSchema,
+            mediaType: ModelMediaTypeSchema,
             inputCapabilities: z.array(MediaCapabilitySchema).optional(),
             outputCapabilities: z.array(MediaCapabilitySchema).optional(),
             allowedParams: ModelAllowedParamsSchema,
@@ -176,7 +182,7 @@ cmsModelRoutes.openapi(createModelRoute, async (c) => {
   if (code.length === 0) throw validation("Kode model wajib diisi.");
   if (displayName.length < 2) throw validation("Nama model minimal 2 karakter.");
   if (body.tokenCost < 0) throw validation("Tarif token harus angka 0 atau lebih.");
-  assertAllowedParams(body.allowedParams);
+  assertAllowedParams(body.allowedParams, body.mediaType);
 
   const outputCapabilities = body.outputCapabilities ?? [body.mediaType];
   assertCapabilities(outputCapabilities);
@@ -263,11 +269,11 @@ cmsModelRoutes.openapi(patchModelRoute, async (c) => {
   if (body.tokenCost !== undefined && body.tokenCost < 0) {
     throw validation("Tarif token harus angka 0 atau lebih.");
   }
-  if (body.allowedParams) assertAllowedParams(body.allowedParams);
-  if (body.outputCapabilities !== undefined) assertCapabilities(body.outputCapabilities);
-
   const [existing] = await db.select().from(aiModels).where(eq(aiModels.id, id)).limit(1);
   if (!existing) throw notFound("Model tidak ditemukan.");
+
+  if (body.allowedParams) assertAllowedParams(body.allowedParams, existing.mediaType);
+  if (body.outputCapabilities !== undefined) assertCapabilities(body.outputCapabilities);
 
   if (body.source !== undefined && existing.source === "SYNC") {
     throw validation("Sumber model hasil sinkronisasi tidak dapat diubah.");

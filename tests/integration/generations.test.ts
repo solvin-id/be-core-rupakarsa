@@ -2,7 +2,8 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { db } from "../../src/db/client.js";
-import { planUsages, tokenLedger, workspaces } from "../../src/db/schema.js";
+import { aiModels, aiProviders, planUsages, tokenLedger, workspaces } from "../../src/db/schema.js";
+import { env } from "../../src/env.js";
 import {
   createAccount,
   createClient,
@@ -268,6 +269,63 @@ describe("generation pipeline", () => {
     );
     expect(missingDuration.status).toBe(400);
     expect(missingDuration.body.error.message).toBe("Durasi wajib dipilih untuk model video.");
+  });
+
+  it("keeps a TEXT catalog model out of rendering while allowing it as the plan model", async () => {
+    const { client } = await prepare("text-model@example.test", { tokens: 100 });
+    const folder = await createFolder(client, "Model Teks");
+
+    const [provider] = await db
+      .select()
+      .from(aiProviders)
+      .where(eq(aiProviders.code, "HIGGSFIELD"))
+      .limit(1);
+    if (!provider) throw new Error("missing fixed provider");
+    const [textModel] = await db
+      .insert(aiModels)
+      .values({
+        providerId: provider.id,
+        code: "plan-only",
+        displayName: "Plan Only",
+        providerModelId: "plan-only",
+        mediaType: "TEXT",
+        inputCapabilities: ["TEXT"],
+        outputCapabilities: ["TEXT"],
+        source: "SYNC",
+        allowedParams: { resolutions: [], aspectRatios: [] },
+        tokenCost: 0,
+        isActive: true,
+      })
+      .returning();
+    if (!textModel) throw new Error("failed to create the TEXT model");
+
+    const admin = createClient();
+    await login(admin, env.SEED_SUPERADMIN_EMAIL);
+    const saved = await admin.json<{ planModelId: string | null }>("/api/cms/settings/ai", {
+      ...jsonBody({
+        planModelId: textModel.id,
+        analysisModelId: null,
+        videoAnalysisModelId: null,
+        defaultVideoModelId: null,
+      }),
+      method: "PUT",
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.planModelId).toBe(textModel.id);
+
+    const render = await client.json<{ error: { message: string } }>(
+      "/api/creator/generations",
+      jsonBody({
+        folderId: folder.id,
+        modelId: textModel.id,
+        rawPrompt: "Bukan render",
+        planMode: false,
+        finalPrompt: "Bukan render",
+        selectedParams: { resolution: "auto", aspectRatio: "16:9" },
+      }),
+    );
+    expect(render.status).toBe(400);
+    expect(render.body.error.message).toBe("Model ini bukan model render.");
   });
 
   it("validates uploads and accepts an image reference", async () => {

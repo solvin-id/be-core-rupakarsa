@@ -16,7 +16,7 @@ import {
 export const userRoleEnum = pgEnum("user_role", ["USER", "SUPERADMIN"]);
 export const workspaceRoleEnum = pgEnum("workspace_role", ["OWNER", "ADMIN", "MEMBER"]);
 export const joinRequestStatusEnum = pgEnum("join_request_status", ["PENDING", "APPROVED", "REJECTED"]);
-export const mediaTypeEnum = pgEnum("media_type", ["VIDEO", "IMAGE"]);
+export const mediaTypeEnum = pgEnum("media_type", ["VIDEO", "IMAGE", "TEXT"]);
 export const generationStatusEnum = pgEnum("generation_status", [
   "QUEUED",
   "RENDERING",
@@ -222,7 +222,8 @@ export const generations = pgTable(
     userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
     modelId: uuid("model_id").references(() => aiModels.id, { onDelete: "set null" }),
     modelName: text("model_name").notNull().default(""),
-    mediaType: mediaTypeEnum("media_type").notNull(),
+    // Render outputs only: `generation-service.loadModel` rejects TEXT models before a row is written.
+    mediaType: mediaTypeEnum("media_type").$type<"VIDEO" | "IMAGE">().notNull(),
     rawPrompt: text("raw_prompt").notNull(),
     plannedPrompt: text("planned_prompt").notNull().default(""),
     planMode: boolean("plan_mode").notNull().default(true),

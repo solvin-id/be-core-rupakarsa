@@ -85,11 +85,15 @@ interface ResolvedAttachment {
   url: string;
 }
 
-async function loadModel(modelId: string): Promise<AiModelRow> {
+/** A generation row only ever describes a render, so TEXT catalog models are rejected here. */
+type RenderableModelRow = AiModelRow & { mediaType: "VIDEO" | "IMAGE" };
+
+async function loadModel(modelId: string): Promise<RenderableModelRow> {
   const [model] = await db.select().from(aiModels).where(eq(aiModels.id, modelId)).limit(1);
   if (!model) throw notFound("Model tidak ditemukan.");
   if (!model.isActive) throw conflict("Model ini sedang tidak aktif.");
-  return model;
+  if (model.mediaType === "TEXT") throw validation("Model ini bukan model render.");
+  return { ...model, mediaType: model.mediaType };
 }
 
 export function assertParamsAllowed(model: AiModelRow, params: GenerationParams): void {

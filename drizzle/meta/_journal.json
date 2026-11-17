@@ -29,6 +29,13 @@
       "when": 1794874602579,
       "tag": "0003_fix_kenari_provider_base_url",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794876993254,
+      "tag": "0004_model_media_type_text",
+      "breakpoints": true
     }
   ]
 }

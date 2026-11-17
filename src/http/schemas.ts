@@ -4,6 +4,9 @@ export const RoleSchema = z.enum(["USER", "SUPERADMIN"]);
 export const WorkspaceRoleSchema = z.enum(["OWNER", "ADMIN", "MEMBER"]);
 export const JoinRequestStatusSchema = z.enum(["PENDING", "APPROVED", "REJECTED"]);
 export const MediaTypeSchema = z.enum(["VIDEO", "IMAGE"]);
+/** `ai_models.media_type` also stores TEXT so plan/analysis models live in the same catalog. */
+export const ModelMediaTypeSchema = z.enum(["VIDEO", "IMAGE", "TEXT"]);
+export type ModelMediaType = z.infer<typeof ModelMediaTypeSchema>;
 export const MediaCapabilitySchema = z.enum(["TEXT", "IMAGE", "VIDEO"]);
 export const GenerationStatusSchema = z.enum(["QUEUED", "RENDERING", "COMPLETED", "FAILED"]);
 
@@ -212,7 +215,7 @@ export const AiModelSchema = z
     code: z.string(),
     displayName: z.string(),
     providerModelId: z.string(),
-    mediaType: MediaTypeSchema,
+    mediaType: ModelMediaTypeSchema,
     inputCapabilities: z.array(MediaCapabilitySchema),
     outputCapabilities: z.array(MediaCapabilitySchema),
     source: z.string(),
@@ -247,7 +250,7 @@ export const RemoteModelSchema = z
     displayName: z.string(),
     inputCapabilities: z.array(MediaCapabilitySchema),
     outputCapabilities: z.array(MediaCapabilitySchema),
-    mediaType: MediaTypeSchema,
+    mediaType: ModelMediaTypeSchema,
     durations: z.array(z.number().int()),
     resolutions: z.array(z.string()),
   })
@@ -341,7 +344,7 @@ export const ModelTemplateSchema = z
     providerCode: z.string(),
     code: z.string(),
     displayName: z.string(),
-    mediaType: MediaTypeSchema,
+    mediaType: ModelMediaTypeSchema,
     allowedParams: ModelAllowedParamsSchema,
     tokenCost: z.number().int(),
   })
