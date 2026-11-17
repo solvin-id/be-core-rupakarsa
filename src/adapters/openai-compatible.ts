@@ -6,13 +6,32 @@ import type {
   RenderAdapter,
   RenderRequest,
   RenderResult,
+  VideoJobStatus,
+  VideoRenderAdapter,
 } from "./types.js";
 import { joinUrl, resolveProviderKey } from "../services/model-sync-service.js";
 import { describeProviderFailure } from "../services/provider-failure.js";
 
 const REQUEST_TIMEOUT_MS = 120_000;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 const RETRY_DELAY_MS = 2_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+/**
+ * Every provider-specific path and field for async video jobs. Kenari publishes this shape;
+ * a publisher using the plain OpenAI shape (`/videos`) fails with the provider's own message.
+ */
+export const OPENAI_VIDEO_CONTRACT = {
+  submitPath: "/videos/generations",
+  statusPath: (jobId: string) => `/videos/${jobId}`,
+  pending: new Set(["rendering", "queued", "in_progress"]),
+  done: new Set(["done", "completed", "succeeded"]),
+  failed: new Set(["failed", "expired", "cancelled", "canceled"]),
+} as const;
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
 function authHeaders(provider: AiProviderRow): Record<string, string> {
   const apiKey = resolveProviderKey(provider);
@@ -51,7 +70,7 @@ async function postJson(
 }
 
 /** One adapter for every OpenAI-compatible publisher (DeepSeek, OpenRouter, vLLM, ...). */
-export class OpenAiCompatibleAdapter implements RenderAdapter {
+export class OpenAiCompatibleAdapter implements RenderAdapter, VideoRenderAdapter {
   private readonly provider: AiProviderRow;
   private readonly model: AiModelRow | null;
 
@@ -132,6 +151,108 @@ export class OpenAiCompatibleAdapter implements RenderAdapter {
       };
     }
     throw new AppError(502, "PROVIDER_ERROR", "Provider tidak mengembalikan gambar.");
+  }
+
+  async submitVideo(input: RenderRequest, signal: AbortSignal): Promise<{ jobId: string }> {
+    const model = this.model;
+    if (!model) {
+      throw new AppError(500, "INTERNAL", "Model render tidak terikat ke adapter.");
+    }
+
+    const url = joinUrl(this.provider.baseUrl, OPENAI_VIDEO_CONTRACT.submitPath);
+    const body = {
+      model: model.providerModelId || model.code,
+      prompt: input.prompt,
+      ...(input.selectedParams.durationSec !== undefined
+        ? { duration: input.selectedParams.durationSec }
+        : {}),
+      ...(input.selectedParams.resolution !== "auto"
+        ? { resolution: input.selectedParams.resolution }
+        : {}),
+      ...(input.selectedParams.aspectRatio ? { aspect_ratio: input.selectedParams.aspectRatio } : {}),
+      ...(input.referenceUrl ? { image_url: input.referenceUrl } : {}),
+    };
+
+    // Deliberately no retry loop: an accepted submit is a billed job, so a lost response must not
+    // be replayed the way `postJson` replays chat/image requests.
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(this.provider) },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (error) {
+      throw new AppError(502, "PROVIDER_ERROR", describeProviderFailure(error, url, REQUEST_TIMEOUT_MS));
+    }
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new AppError(502, "PROVIDER_ERROR", `Provider membalas ${response.status}: ${detail.slice(0, 300)}`);
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as { id?: unknown };
+    const jobId = readString(payload.id);
+    if (!jobId) throw new AppError(502, "PROVIDER_ERROR", "Provider tidak mengembalikan id job.");
+    return { jobId };
+  }
+
+  async pollVideo(jobId: string, signal: AbortSignal): Promise<VideoJobStatus> {
+    const url = joinUrl(this.provider.baseUrl, OPENAI_VIDEO_CONTRACT.statusPath(jobId));
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json", ...authHeaders(this.provider) },
+        signal,
+      });
+    } catch (error) {
+      throw new AppError(502, "PROVIDER_ERROR", describeProviderFailure(error, url, REQUEST_TIMEOUT_MS));
+    }
+
+    // Transient provider-side pressure: keep the job alive and let the worker poll again.
+    if (response.status === 429 || response.status === 503) return { state: "pending" };
+    if (!response.ok) {
+      throw new AppError(502, "PROVIDER_ERROR", `Provider membalas ${response.status}.`);
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      status?: unknown;
+      url?: unknown;
+      failure_reason?: unknown;
+    };
+    const status = readString(payload.status)?.toLowerCase() ?? "";
+
+    if (OPENAI_VIDEO_CONTRACT.done.has(status)) {
+      const outputUrl = readString(payload.url);
+      if (!outputUrl) throw new AppError(502, "PROVIDER_ERROR", "Provider tidak mengembalikan hasil render.");
+      return { state: "done", url: outputUrl };
+    }
+    if (OPENAI_VIDEO_CONTRACT.failed.has(status)) {
+      return { state: "failed", reason: readString(payload.failure_reason) ?? "Provider gagal merender." };
+    }
+    return { state: "pending" };
+  }
+
+  async downloadVideo(url: string, signal: AbortSignal): Promise<{ bytes: Buffer; mime: string }> {
+    let response: Response;
+    try {
+      response = await fetch(url, { method: "GET", headers: authHeaders(this.provider), signal });
+    } catch (error) {
+      throw new AppError(502, "PROVIDER_ERROR", describeProviderFailure(error, url, DOWNLOAD_TIMEOUT_MS));
+    }
+
+    if (!response.ok) {
+      throw new AppError(502, "PROVIDER_ERROR", `Unduhan hasil render gagal (${response.status}).`);
+    }
+
+    const mime = (response.headers.get("content-type") ?? "video/mp4").split(";")[0]?.trim();
+    return {
+      bytes: Buffer.from(await response.arrayBuffer()),
+      mime: mime && mime.length > 0 ? mime : "video/mp4",
+    };
   }
 
   async render(input: RenderRequest, signal: AbortSignal): Promise<RenderResult> {

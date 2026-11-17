@@ -60,6 +60,29 @@ export interface RenderAdapter {
   render(input: RenderRequest, signal: AbortSignal): Promise<RenderResult>;
 }
 
+export type VideoJobStatus =
+  | { state: "pending" }
+  | { state: "done"; url: string }
+  | { state: "failed"; reason: string };
+
+/** Optional capability: a provider whose video jobs are asynchronous submit/poll/download. */
+export interface VideoRenderAdapter {
+  submitVideo(input: RenderRequest, signal: AbortSignal): Promise<{ jobId: string }>;
+  pollVideo(jobId: string, signal: AbortSignal): Promise<VideoJobStatus>;
+  downloadVideo(url: string, signal: AbortSignal): Promise<{ bytes: Buffer; mime: string }>;
+}
+
+export function supportsVideoAdapter(
+  adapter: RenderAdapter,
+): adapter is RenderAdapter & VideoRenderAdapter {
+  const candidate = adapter as Partial<VideoRenderAdapter>;
+  return (
+    typeof candidate.submitVideo === "function" &&
+    typeof candidate.pollVideo === "function" &&
+    typeof candidate.downloadVideo === "function"
+  );
+}
+
 export interface ChatContentPart {
   type: "text" | "image_url" | "video_url";
   text?: string;

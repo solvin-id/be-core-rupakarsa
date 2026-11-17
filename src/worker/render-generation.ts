@@ -5,7 +5,10 @@ import type { Redis } from "ioredis";
 
 import { db } from "../db/client.js";
 import { aiModels, aiProviders, generations, mediaAssets } from "../db/schema.js";
-import type { RenderResult } from "../adapters/types.js";
+import { supportsVideoAdapter } from "../adapters/types.js";
+import type { RenderRequest, RenderResult, VideoRenderAdapter } from "../adapters/types.js";
+import { waitFor } from "../adapters/wait-for.js";
+import { AppError } from "../http/errors.js";
 import { logger } from "../logger.js";
 import { createRedisConnection } from "../queue/generation-queue.js";
 import type { RenderJob } from "../queue/index.js";
@@ -14,7 +17,10 @@ import { renderDuration, renderTotal, tokensCharged } from "../routes/metrics.js
 import { failGeneration, finalizeGeneration } from "../services/generation-service.js";
 import { urlForAsset } from "../services/storage-service.js";
 
-const RENDER_TIMEOUT_MS = 120_000;
+const IMAGE_RENDER_TIMEOUT_MS = 120_000;
+/** kenari closes an unfinished video job after an hour, so 20 minutes still leaves room to fail cleanly. */
+const VIDEO_RENDER_TIMEOUT_MS = 20 * 60_000;
+const VIDEO_POLL_INTERVAL_MS = 5_000;
 const FALLBACK_ERROR = "Render gagal. Token dikembalikan otomatis.";
 const PROVIDER_SLOT_LIMIT = 4;
 const SLOT_WAIT_MS = 500;
@@ -99,21 +105,24 @@ export async function renderGeneration(job: RenderJob): Promise<void> {
       throw new Error("Model render tidak ditemukan pada generation ini.");
     }
     const adapter = await getRenderAdapter(generation.modelId);
-    const result = await withProviderSlot(provider.id, async () =>
-      adapter.render(
-        {
-          generationId: generation.id,
-          prompt: generation.finalPrompt || generation.plannedPrompt || generation.rawPrompt,
-          mediaType: generation.mediaType,
-          modelName: generation.modelName,
-          selectedParams: generation.selectedParams,
-          simulateFailure: job.simulateFailure,
-          referenceUrl: await referenceUrlFor(generation.referenceImageUrl),
-        },
-        AbortSignal.timeout(RENDER_TIMEOUT_MS),
-      ),
+    const request: RenderRequest = {
+      generationId: generation.id,
+      prompt: generation.finalPrompt || generation.plannedPrompt || generation.rawPrompt,
+      mediaType: generation.mediaType,
+      modelName: generation.modelName,
+      selectedParams: generation.selectedParams,
+      simulateFailure: job.simulateFailure,
+      referenceUrl: await referenceUrlFor(generation.referenceImageUrl),
+    };
+    const signal = AbortSignal.timeout(
+      request.mediaType === "VIDEO" ? VIDEO_RENDER_TIMEOUT_MS : IMAGE_RENDER_TIMEOUT_MS,
     );
-    await finalizeGeneration(generation.id, result as RenderResult);
+
+    const result =
+      supportsVideoAdapter(adapter) && request.mediaType === "VIDEO"
+        ? await renderVideo(adapter, request, signal, provider.id)
+        : await withProviderSlot(provider.id, () => adapter.render(request, signal));
+    await finalizeGeneration(generation.id, result);
 
     renderTotal.inc({ status: "completed", provider: provider.name });
     renderDuration.observe({ provider: provider.name }, (Date.now() - startedAt) / 1000);
@@ -124,4 +133,33 @@ export async function renderGeneration(job: RenderJob): Promise<void> {
     renderTotal.inc({ status: "failed", provider: provider.name });
     renderDuration.observe({ provider: provider.name }, (Date.now() - startedAt) / 1000);
   }
+}
+
+/**
+ * Async video jobs: submit and download hold a provider slot, polling does not, so a long render
+ * cannot starve the four-slot gate for other work on the same provider.
+ */
+async function renderVideo(
+  adapter: VideoRenderAdapter,
+  input: RenderRequest,
+  signal: AbortSignal,
+  providerId: string,
+): Promise<RenderResult> {
+  const { jobId } = await withProviderSlot(providerId, () => adapter.submitVideo(input, signal));
+
+  let url: string | null = null;
+  while (url === null) {
+    await waitFor(VIDEO_POLL_INTERVAL_MS, signal);
+    const status = await adapter.pollVideo(jobId, signal);
+    if (status.state === "failed") throw new AppError(502, "PROVIDER_ERROR", status.reason);
+    if (status.state === "done") url = status.url;
+  }
+
+  const clip = await withProviderSlot(providerId, () => adapter.downloadVideo(url, signal));
+  return {
+    bytes: clip.bytes,
+    mime: clip.mime,
+    externalJobId: jobId,
+    durationSec: input.selectedParams.durationSec,
+  };
 }

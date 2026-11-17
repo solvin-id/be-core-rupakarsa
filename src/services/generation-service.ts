@@ -392,6 +392,7 @@ const MIME_EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/webp": "webp",
   "video/mp4": "mp4",
+  "video/quicktime": "mov",
   "video/webm": "webm",
 };
 
