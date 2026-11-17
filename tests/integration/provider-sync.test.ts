@@ -71,7 +71,12 @@ interface SyncBody {
   added: number;
   updated: number;
   skipped: number;
-  models: Array<{ code: string; outputCapabilities: string[]; mediaType: string }>;
+  models: Array<{
+    code: string;
+    outputCapabilities: string[];
+    mediaType: string;
+    allowedParams: { resolutions: string[]; aspectRatios: string[] };
+  }>;
 }
 
 describe("provider model sync", () => {
@@ -79,7 +84,7 @@ describe("provider model sync", () => {
     await resetDatabase();
   });
 
-  it("imports renderable models, skips text-only ones, and never touches operator overrides", async () => {
+  it("imports renderable and text models, and never touches operator overrides", async () => {
     const client = await adminClient();
 
     const created = await client.json<{ id: string }>(
@@ -99,24 +104,35 @@ describe("provider model sync", () => {
       `/api/cms/providers/${created.body.id}/remote-models`,
     );
     expect(preview.status).toBe(200);
-    expect(preview.body.models.map((row) => row.providerModelId).sort()).toEqual(["img-1", "vid-1"]);
+    expect(preview.body.models.map((row) => row.providerModelId).sort()).toEqual([
+      "img-1",
+      "txt-1",
+      "vid-1",
+    ]);
 
     const tested = await client.json<{ ok: boolean; message: string }>(
       `/api/cms/providers/${created.body.id}/test`,
       { method: "POST" },
     );
     expect(tested.body.ok).toBe(true);
-    expect(tested.body.message).toContain("2 model terdeteksi");
+    expect(tested.body.message).toContain("3 model terdeteksi");
 
     const first = await client.json<SyncBody>(
       `/api/cms/providers/${created.body.id}/sync-models`,
       { method: "POST" },
     );
     expect(first.status).toBe(200);
-    expect(first.body.added).toBe(2);
+    expect(first.body.added).toBe(3);
     expect(first.body.updated).toBe(0);
-    expect(first.body.skipped).toBe(1);
-    expect(first.body.models).toHaveLength(2);
+    expect(first.body.skipped).toBe(0);
+    expect(first.body.models).toHaveLength(3);
+
+    const text = first.body.models.find((row) => row.code === "txt-1");
+    expect(text).toMatchObject({
+      mediaType: "TEXT",
+      outputCapabilities: ["TEXT"],
+      allowedParams: { resolutions: [], aspectRatios: [] },
+    });
 
     const video = await client.json<Array<{ id: string; code: string; outputCapabilities: string[] }>>(
       `/api/cms/models?output=VIDEO&providerId=${created.body.id}`,
@@ -138,7 +154,7 @@ describe("provider model sync", () => {
       { method: "POST" },
     );
     expect(second.body.added).toBe(0);
-    expect(second.body.updated).toBe(2);
+    expect(second.body.updated).toBe(3);
 
     const [row] = await db.select().from(aiProviders).where(eq(aiProviders.id, created.body.id)).limit(1);
     expect(row?.lastSyncedAt).not.toBeNull();
@@ -186,20 +202,33 @@ describe("provider model sync", () => {
       { method: "POST" },
     );
     expect(tested.body.ok).toBe(true);
-    expect(tested.body.message).toContain("1 model terdeteksi");
+    expect(tested.body.message).toContain("2 model terdeteksi");
 
     const synced = await client.json<{ added: number; skipped: number }>(
       `/api/cms/providers/${created.body.id}/sync-models`,
       { method: "POST" },
     );
-    expect(synced.body.added).toBe(1);
-    expect(synced.body.skipped).toBe(1);
+    expect(synced.body.added).toBe(2);
+    expect(synced.body.skipped).toBe(0);
 
-    const [row] = await db.select().from(aiModels).where(eq(aiModels.providerId, created.body.id));
-    expect(row?.code).toBe("veo-3.1-lite");
-    expect(row?.mediaType).toBe("VIDEO");
-    expect(row?.inputCapabilities).toEqual(["TEXT", "IMAGE"]);
-    expect(row?.allowedParams).toEqual({ durations: [8], resolutions: ["720p"], aspectRatios: ["16:9", "9:16", "1:1"] });
+    const rows = await db
+      .select()
+      .from(aiModels)
+      .where(eq(aiModels.providerId, created.body.id))
+      .orderBy(aiModels.code);
+    const video = rows.find((row) => row.code === "veo-3.1-lite");
+    expect(video?.mediaType).toBe("VIDEO");
+    expect(video?.inputCapabilities).toEqual(["TEXT", "IMAGE"]);
+    expect(video?.allowedParams).toEqual({
+      durations: [8],
+      resolutions: ["720p"],
+      aspectRatios: ["16:9", "9:16", "1:1"],
+    });
+
+    const text = rows.find((row) => row.code === "beam-1-0:free");
+    expect(text?.mediaType).toBe("TEXT");
+    expect(text?.outputCapabilities).toEqual(["TEXT"]);
+    expect(text?.allowedParams).toEqual({ resolutions: [], aspectRatios: [] });
   });
 
   it("reports the upstream error and stores syncError when the publisher is unreachable", async () => {

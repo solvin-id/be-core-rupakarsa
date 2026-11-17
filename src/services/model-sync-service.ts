@@ -21,7 +21,7 @@ export interface RemoteModel {
   displayName: string;
   inputCapabilities: ModelCapability[];
   outputCapabilities: ModelCapability[];
-  mediaType: "VIDEO" | "IMAGE";
+  mediaType: "VIDEO" | "IMAGE" | "TEXT";
   /** Publisher-declared render options; empty when the payload does not advertise them. */
   durations: number[];
   resolutions: string[];
@@ -29,7 +29,7 @@ export interface RemoteModel {
 
 export interface RemoteCatalog {
   models: RemoteModel[];
-  /** Entries the publisher offers but this pipeline cannot render (text-only models). */
+  /** Entries this catalog cannot store at all: audio-only models, and entries without an id. */
   skipped: number;
 }
 
@@ -40,9 +40,11 @@ export interface SyncResult {
   models: AiModelRow[];
 }
 
-const DEFAULT_ALLOWED_PARAMS: Record<"VIDEO" | "IMAGE", ModelAllowedParams> = {
+const DEFAULT_ALLOWED_PARAMS: Record<"VIDEO" | "IMAGE" | "TEXT", ModelAllowedParams> = {
   VIDEO: { durations: [5], resolutions: ["auto"], aspectRatios: ["16:9", "9:16", "1:1"] },
   IMAGE: { resolutions: ["1k"], aspectRatios: ["1:1", "4:3", "16:9", "9:16"] },
+  // Plan/analysis models have no render options; the empty pair is the shape CMS validation expects.
+  TEXT: { resolutions: [], aspectRatios: [] },
 };
 
 /**
@@ -134,6 +136,10 @@ function nonEmptyStrings(raw: unknown): string[] {
   return values;
 }
 
+/**
+ * Chat-only entries are imported as TEXT so the CMS can pick them for plan/analysis;
+ * audio-only entries stay unsupported and are counted as skipped.
+ */
 export function toRemoteModel(entry: RawRemoteEntry): RemoteModel | null {
   if (typeof entry.id !== "string" || entry.id.trim().length === 0) return null;
   const providerModelId = entry.id.trim();
@@ -145,11 +151,13 @@ export function toRemoteModel(entry: RawRemoteEntry): RemoteModel | null {
     entry.architecture?.output_modalities ?? entry.output_modalities ?? entry.modalities?.output,
   );
 
-  const mediaType: "VIDEO" | "IMAGE" | null = outputs.includes("VIDEO")
+  const mediaType: "VIDEO" | "IMAGE" | "TEXT" | null = outputs.includes("VIDEO")
     ? "VIDEO"
     : outputs.includes("IMAGE")
       ? "IMAGE"
-      : null;
+      : outputs.includes("TEXT")
+        ? "TEXT"
+        : null;
   if (!mediaType) return null;
 
   return {
