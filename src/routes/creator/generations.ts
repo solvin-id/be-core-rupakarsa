@@ -1,16 +1,19 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
+import { streamSSE } from "hono/streaming";
 
 import { requireWorkspace, sessionGuard } from "../../auth/middleware.js";
 import { db } from "../../db/client.js";
 import { env } from "../../env.js";
 import { expensiveLimiter } from "../../http/rate-limit.js";
-import { aiModels, aiProviders, generations } from "../../db/schema.js";
+import { aiModels, aiProviders, folders, generations } from "../../db/schema.js";
 import { notFound } from "../../http/errors.js";
 import { defaultHook } from "../../http/route-helpers.js";
-import { toGeneration, toModel } from "../../http/serialize.js";
+import { toActiveGeneration, toGeneration, toModel } from "../../http/serialize.js";
+import type { ActiveGenerationDto } from "../../http/schemas.js";
 import {
+  ActiveGenerationSchema,
   AiModelSchema,
   CreateGenerationResponseSchema,
   ErrorResponseSchema,
@@ -187,6 +190,81 @@ creatorGenerationRoutes.openapi(createGenerationRoute, async (c) => {
   return c.json({ generation: toGeneration(result.generation), workspace: result.workspace }, 201);
 });
 
+const STREAM_POLL_MS = 2_000;
+const STREAM_HEARTBEAT_MS = 10_000;
+/** An idle workspace keeps the stream open one minute, then ends it; EventSource reconnects. */
+const STREAM_IDLE_LIMIT_MS = 60_000;
+/** A finished row can commit just after a poll read it, so each poll re-reads a small window. */
+const STREAM_OVERLAP_MS = 5_000;
+const STREAM_EMITTED_CAP = 500;
+
+/**
+ * Live render feed for the notification bell. Progress is derived from persisted state only
+ * (`status`, `started_at`, `provider_status`); providers expose no percentage.
+ *
+ * Completion is reported from `completed_at`, not from the job leaving the active list: a render
+ * shorter than the poll interval would otherwise never raise an alert.
+ */
+creatorGenerationRoutes.get("/generations/stream", (c) => {
+  const auth = c.get("auth");
+  const workspaceId = auth.workspaceId;
+  if (!workspaceId) throw notFound("Workspace aktif tidak ditemukan.");
+
+  c.header("Cache-Control", "no-cache, no-transform");
+  c.header("X-Accel-Buffering", "no");
+
+  return streamSSE(c, async (stream) => {
+    let lastPayload = "";
+    let lastHeartbeat = Date.now();
+    let idleSince = Date.now();
+    let checkpoint = new Date();
+    const emitted = new Set<string>();
+
+    while (!stream.closed) {
+      const next = await loadActiveGenerations(workspaceId);
+      const payload = JSON.stringify(next);
+      if (payload !== lastPayload) {
+        lastPayload = payload;
+        await stream.writeSSE({ event: "generations", data: payload });
+      }
+
+      const checkedAt = new Date();
+      const ended = await db
+        .select()
+        .from(generations)
+        .where(
+          and(
+            eq(generations.workspaceId, workspaceId),
+            gt(generations.completedAt, checkpoint),
+            inArray(generations.status, ["COMPLETED", "FAILED"]),
+          ),
+        )
+        .orderBy(asc(generations.completedAt));
+      checkpoint = new Date(checkedAt.getTime() - STREAM_OVERLAP_MS);
+
+      for (const row of ended) {
+        if (emitted.has(row.id)) continue;
+        if (emitted.size >= STREAM_EMITTED_CAP) emitted.clear();
+        emitted.add(row.id);
+        await stream.writeSSE({ event: "finished", data: JSON.stringify(toGeneration(row)) });
+      }
+
+      if (next.length > 0) {
+        idleSince = Date.now();
+      } else if (Date.now() - idleSince >= STREAM_IDLE_LIMIT_MS) {
+        break;
+      }
+
+      if (Date.now() - lastHeartbeat >= STREAM_HEARTBEAT_MS) {
+        lastHeartbeat = Date.now();
+        await stream.writeSSE({ event: "heartbeat", data: String(lastHeartbeat) });
+      }
+
+      await stream.sleep(STREAM_POLL_MS);
+    }
+  });
+});
+
 const getGenerationRoute = createRoute({
   method: "get",
   path: "/generations/{id}",
@@ -245,18 +323,46 @@ const recentRoute = createRoute({
   method: "get",
   path: "/generations",
   tags: ["Creator generations"],
+  request: {
+    query: z.object({ active: z.enum(["true"]).optional() }),
+  },
   responses: {
     200: {
-      description: "Recent generations in the workspace",
-      content: { "application/json": { schema: z.array(GenerationSchema) } },
+      description: "Recent generations, or the workspace's in-flight ones with ?active=true",
+      content: {
+        "application/json": {
+          schema: z.union([z.array(GenerationSchema), z.array(ActiveGenerationSchema)]),
+        },
+      },
     },
   },
 });
+
+/** In-flight rows scoped to one workspace, joined with the folder name the studio links back to. */
+async function loadActiveGenerations(workspaceId: string): Promise<ActiveGenerationDto[]> {
+  const rows = await db
+    .select({ generation: generations, folderName: folders.name })
+    .from(generations)
+    .innerJoin(folders, eq(folders.id, generations.folderId))
+    .where(
+      and(
+        eq(generations.workspaceId, workspaceId),
+        inArray(generations.status, ["QUEUED", "RENDERING"]),
+      ),
+    )
+    .orderBy(desc(generations.createdAt));
+
+  return rows.map((row) => toActiveGeneration(row.generation, row.folderName));
+}
 
 creatorGenerationRoutes.openapi(recentRoute, async (c) => {
   const auth = c.get("auth");
   const workspaceId = auth.workspaceId;
   if (!workspaceId) throw notFound("Workspace aktif tidak ditemukan.");
+
+  if (c.req.valid("query").active === "true") {
+    return c.json(await loadActiveGenerations(workspaceId), 200);
+  }
 
   const rows = await db
     .select()
