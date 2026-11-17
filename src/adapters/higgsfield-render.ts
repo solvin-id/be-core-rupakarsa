@@ -124,7 +124,9 @@ export class HiggsfieldRenderAdapter implements RenderAdapter, VideoRenderAdapte
       throw new AppError(502, "PROVIDER_ERROR", describeFailure(error, url));
     }
 
-    if (response.status === 429 || response.status === 503) return { state: "pending" };
+    if (response.status === 429 || response.status === 503) {
+      return { state: "pending", providerStatus: "retrying" };
+    }
     if (!response.ok) throw providerError(response, await response.text());
 
     const payload = (await response.json().catch(() => ({}))) as StatusPayload;
@@ -141,7 +143,7 @@ export class HiggsfieldRenderAdapter implements RenderAdapter, VideoRenderAdapte
         reason: readString(payload.detail) ?? readString(payload.error) ?? "Provider gagal merender.",
       };
     }
-    return { state: "pending" };
+    return { state: "pending", providerStatus: status.length > 0 ? status : undefined };
   }
 
   async downloadVideo(url: string, signal: AbortSignal): Promise<{ bytes: Buffer; mime: string }> {

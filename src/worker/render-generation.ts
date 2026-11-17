@@ -14,7 +14,12 @@ import { createRedisConnection } from "../queue/generation-queue.js";
 import type { RenderJob } from "../queue/index.js";
 import { getRenderAdapter } from "../providers/registry.js";
 import { renderDuration, renderTotal, tokensCharged } from "../routes/metrics.js";
-import { failGeneration, finalizeGeneration } from "../services/generation-service.js";
+import {
+  failGeneration,
+  finalizeGeneration,
+  markGenerationStarted,
+  markProviderStatus,
+} from "../services/generation-service.js";
 import { urlForAsset } from "../services/storage-service.js";
 
 const IMAGE_RENDER_TIMEOUT_MS = 120_000;
@@ -92,10 +97,7 @@ export async function renderGeneration(job: RenderJob): Promise<void> {
   if (!generation) return;
   if (generation.status === "COMPLETED" || generation.status === "FAILED") return;
 
-  await db
-    .update(generations)
-    .set({ status: "RENDERING" })
-    .where(eq(generations.id, generation.id));
+  await markGenerationStarted(generation.id);
 
   const provider = await resolveProviderLabel(generation.modelId);
   const startedAt = Date.now();
@@ -148,11 +150,20 @@ async function renderVideo(
   const { jobId } = await withProviderSlot(providerId, () => adapter.submitVideo(input, signal));
 
   let url: string | null = null;
+  let lastStatus = "";
   while (url === null) {
     await waitFor(VIDEO_POLL_INTERVAL_MS, signal);
     const status = await adapter.pollVideo(jobId, signal);
     if (status.state === "failed") throw new AppError(502, "PROVIDER_ERROR", status.reason);
-    if (status.state === "done") url = status.url;
+    if (status.state === "done") {
+      url = status.url;
+      break;
+    }
+    // Only the provider's own state is surfaced; there is no percentage to invent.
+    if (status.providerStatus && status.providerStatus !== lastStatus) {
+      lastStatus = status.providerStatus;
+      await markProviderStatus(input.generationId, lastStatus);
+    }
   }
 
   const clip = await withProviderSlot(providerId, () => adapter.downloadVideo(url, signal));

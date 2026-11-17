@@ -61,7 +61,7 @@ export interface RenderAdapter {
 }
 
 export type VideoJobStatus =
-  | { state: "pending" }
+  | { state: "pending"; providerStatus?: string }
   | { state: "done"; url: string }
   | { state: "failed"; reason: string };
 

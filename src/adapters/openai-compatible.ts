@@ -213,7 +213,9 @@ export class OpenAiCompatibleAdapter implements RenderAdapter, VideoRenderAdapte
     }
 
     // Transient provider-side pressure: keep the job alive and let the worker poll again.
-    if (response.status === 429 || response.status === 503) return { state: "pending" };
+    if (response.status === 429 || response.status === 503) {
+      return { state: "pending", providerStatus: "retrying" };
+    }
     if (!response.ok) {
       throw new AppError(502, "PROVIDER_ERROR", `Provider membalas ${response.status}.`);
     }
@@ -233,7 +235,7 @@ export class OpenAiCompatibleAdapter implements RenderAdapter, VideoRenderAdapte
     if (OPENAI_VIDEO_CONTRACT.failed.has(status)) {
       return { state: "failed", reason: readString(payload.failure_reason) ?? "Provider gagal merender." };
     }
-    return { state: "pending" };
+    return { state: "pending", providerStatus: status.length > 0 ? status : undefined };
   }
 
   async downloadVideo(url: string, signal: AbortSignal): Promise<{ bytes: Buffer; mime: string }> {

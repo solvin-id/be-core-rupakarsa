@@ -178,6 +178,33 @@ function planAttachmentsOf(resolved: ResolvedAttachment[]): PlanAttachment[] {
   return resolved.map((item) => ({ url: item.url, kind: item.kind }));
 }
 
+/**
+ * Marks the render as started without resetting a start time a provider retry already recorded, so
+ * the studio's elapsed timer stays truthful across queue retries.
+ */
+export async function markGenerationStarted(generationId: string): Promise<void> {
+  await db
+    .update(generations)
+    .set({ status: "RENDERING", startedAt: sql`coalesce(${generations.startedAt}, now())` })
+    .where(eq(generations.id, generationId));
+}
+
+/** Persists a provider-reported status only when it differs, so polling does not rewrite rows. */
+export async function markProviderStatus(
+  generationId: string,
+  providerStatus: string,
+): Promise<void> {
+  await db
+    .update(generations)
+    .set({ providerStatus })
+    .where(
+      and(
+        eq(generations.id, generationId),
+        sql`${generations.providerStatus} is distinct from ${providerStatus}`,
+      ),
+    );
+}
+
 export async function planGeneration(input: PlanGenerationInput): Promise<PlanGenerationResult> {
   const limits = await getLimitsSettings(db);
   if (input.rawPrompt.trim().length === 0 || input.rawPrompt.length > limits.planPromptMaxChars) {
@@ -407,7 +434,7 @@ export function extensionForMime(mime: string): string {
   return MIME_EXTENSIONS[mime] ?? "bin";
 }
 
-/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — immutable, session-scoped. */
+/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — public and immutable. */
 export function generationOutputKey(workspaceId: string, generationId: string, mime: string): string {
   return `workspaces/${workspaceId}/generations/${generationId}.${extensionForMime(mime)}`;
 }
