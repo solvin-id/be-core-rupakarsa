@@ -9,6 +9,7 @@ import type {
   WorkspaceRow,
 } from "../db/schema.js";
 import type {
+  ActiveGenerationDto,
   AiModelDto,
   AiProviderDto,
   FolderDto,
@@ -132,8 +133,30 @@ export function toGeneration(row: GenerationRow, outputPurgedAt: Date | null = n
     outputPurgedAt: outputPurgedAt ? outputPurgedAt.toISOString() : null,
     errorMessage: row.errorMessage,
     refunded: row.refunded,
+    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+    providerStatus: row.providerStatus,
+    promptCompressed: row.promptCompressed,
+    promptLimitChars: row.promptLimitChars,
     createdAt: row.createdAt.toISOString(),
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+  };
+}
+
+/** Notification-bell projection: the generation plus the folder name the studio links back to. */
+export function toActiveGeneration(row: GenerationRow, folderName: string): ActiveGenerationDto {
+  return {
+    id: row.id,
+    folderId: row.folderId,
+    folderName,
+    modelName: row.modelName,
+    mediaType: row.mediaType,
+    status: row.status,
+    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+    providerStatus: row.providerStatus,
+    createdAt: row.createdAt.toISOString(),
+    completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+    tokensCharged: row.tokensCharged,
+    errorMessage: row.errorMessage,
   };
 }
 

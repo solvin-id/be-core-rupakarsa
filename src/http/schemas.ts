@@ -197,10 +197,32 @@ export const GenerationSchema = z
     outputPurgedAt: z.string().nullable(),
     errorMessage: z.string().nullable(),
     refunded: z.boolean(),
+    startedAt: z.string().nullable(),
+    providerStatus: z.string().nullable(),
+    promptCompressed: z.boolean(),
+    promptLimitChars: z.number().int().nullable(),
     createdAt: z.string(),
     completedAt: z.string().nullable(),
   })
   .openapi("Generation");
+
+/** Compact row for the notification bell: only what an in-flight badge needs. */
+export const ActiveGenerationSchema = z
+  .object({
+    id: z.string(),
+    folderId: z.string(),
+    folderName: z.string(),
+    modelName: z.string(),
+    mediaType: MediaTypeSchema,
+    status: GenerationStatusSchema,
+    startedAt: z.string().nullable(),
+    providerStatus: z.string().nullable(),
+    createdAt: z.string(),
+    completedAt: z.string().nullable(),
+    tokensCharged: z.number().int(),
+    errorMessage: z.string().nullable(),
+  })
+  .openapi("ActiveGeneration");
 
 export const ModelAllowedParamsSchema = z.object({
   durations: z.array(z.number().int()).optional(),
@@ -559,6 +581,7 @@ export type WorkspacesPayloadDto = z.infer<typeof WorkspacesPayloadSchema>;
 export type FolderDto = z.infer<typeof FolderSchema>;
 export type FolderWithStatsDto = z.infer<typeof FolderWithStatsSchema>;
 export type GenerationDto = z.infer<typeof GenerationSchema>;
+export type ActiveGenerationDto = z.infer<typeof ActiveGenerationSchema>;
 export type GenerationParamsDto = z.infer<typeof GenerationParamsSchema>;
 export type AiModelDto = z.infer<typeof AiModelSchema>;
 export type AiProviderDto = z.infer<typeof AiProviderSchema>;
