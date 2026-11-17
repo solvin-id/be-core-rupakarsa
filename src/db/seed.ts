@@ -135,14 +135,15 @@ export async function seedPlatform(tx: Tx): Promise<void> {
         providerId: provider.id,
         code: template.code,
         displayName: template.displayName,
-        providerModelId: template.code,
+        providerModelId: template.providerModelId ?? template.code,
         mediaType: template.mediaType,
         inputCapabilities: ["TEXT", "IMAGE"],
         outputCapabilities: [template.mediaType],
         source: "SYNC",
+        syncMetadata: template.requestFields ? { requestFields: template.requestFields } : {},
         allowedParams: template.allowedParams,
         tokenCost: template.tokenCost,
-        isActive: template.code !== "kling-2.6-pro",
+        isActive: true,
       })
       .onConflictDoNothing({ target: [aiModels.providerId, aiModels.code] });
   }

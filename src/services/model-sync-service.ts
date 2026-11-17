@@ -173,7 +173,7 @@ export function toRemoteModel(entry: RawRemoteEntry): RemoteModel | null {
 
 function templateCatalog(provider: AiProviderRow): RemoteCatalog {
   const models = templatesForProvider(provider.code).map<RemoteModel>((template) => ({
-    providerModelId: template.code,
+    providerModelId: template.providerModelId ?? template.code,
     displayName: template.displayName,
     inputCapabilities: ["TEXT", "IMAGE"],
     outputCapabilities: [template.mediaType],
@@ -256,25 +256,32 @@ export async function syncProviderModels(db: DbHandle, providerId: string): Prom
   let updated = 0;
   for (const model of catalog.models) {
     const template = templatesForProvider(provider.code).find(
-      (entry) => entry.code === model.providerModelId,
+      (entry) => (entry.providerModelId ?? entry.code) === model.providerModelId,
     );
+    // A template may publish a provider id that differs from its stable catalog code.
+    const code = template?.code ?? model.providerModelId;
+
+    // Workflows differ in the fields they accept (higgsfield rejects what a model does not declare),
+    // so the template's request fields travel with the row the adapter reads.
+    const syncMetadata = {
+      providerModelId: model.providerModelId,
+      inputCapabilities: model.inputCapabilities,
+      outputCapabilities: model.outputCapabilities,
+      ...(template?.requestFields ? { requestFields: template.requestFields } : {}),
+    };
 
     await db
       .insert(aiModels)
       .values({
         providerId: provider.id,
-        code: model.providerModelId,
+        code,
         displayName: model.displayName,
         providerModelId: model.providerModelId,
         mediaType: model.mediaType,
         inputCapabilities: model.inputCapabilities,
         outputCapabilities: model.outputCapabilities,
         source: "SYNC",
-        syncMetadata: {
-          providerModelId: model.providerModelId,
-          inputCapabilities: model.inputCapabilities,
-          outputCapabilities: model.outputCapabilities,
-        },
+        syncMetadata,
         allowedParams:
           template?.allowedParams ?? allowedParamsFor(model) ?? DEFAULT_ALLOWED_PARAMS[model.mediaType],
         tokenCost: template?.tokenCost ?? 0,
@@ -289,10 +296,11 @@ export async function syncProviderModels(db: DbHandle, providerId: string): Prom
           inputCapabilities: model.inputCapabilities,
           outputCapabilities: model.outputCapabilities,
           source: "SYNC",
+          syncMetadata,
         },
       });
 
-    if (existingCodes.has(model.providerModelId)) updated += 1;
+    if (existingCodes.has(code)) updated += 1;
     else added += 1;
   }
 
