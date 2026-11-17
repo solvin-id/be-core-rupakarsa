@@ -93,9 +93,11 @@ export function writeSessionCookie(c: Context, token: string): void {
 }
 
 export function clearSessionCookie(c: Context): void {
-  // Delete both the domain cookie and any host-only duplicate left by an older deploy.
-  deleteCookie(c, SESSION_COOKIE, { path: "/" });
-  deleteCookie(c, CSRF_COOKIE, { path: "/" });
+  // When a shared domain is configured, also delete host-only duplicates left by an older deploy.
+  if (env.COOKIE_DOMAIN.length > 0) {
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
+    deleteCookie(c, CSRF_COOKIE, { path: "/" });
+  }
   deleteCookie(c, SESSION_COOKIE, {
     path: "/",
     domain: env.COOKIE_DOMAIN.length > 0 ? env.COOKIE_DOMAIN : undefined,
