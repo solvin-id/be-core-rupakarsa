@@ -201,6 +201,8 @@ export const aiModels = pgTable(
       .default(sql`'{}'::jsonb`),
     allowedParams: jsonb("allowed_params").$type<ModelAllowedParams>().notNull(),
     tokenCost: integer("token_cost").notNull().default(0),
+    /** Per-model final-prompt ceiling; null falls back to `limits.finalPromptMaxChars`. */
+    maxPromptChars: integer("max_prompt_chars"),
     isActive: boolean("is_active").notNull().default(true),
   },
   (table) => [
@@ -240,6 +242,13 @@ export const generations = pgTable(
     outputSize: integer("output_size").notNull().default(0),
     errorMessage: text("error_message"),
     refunded: boolean("refunded").notNull().default(false),
+    /** Set once the worker starts the render, so the studio can show elapsed time per stage. */
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    /** Last status string the provider reported (`rendering`, `queued`, `in_progress`, …). */
+    providerStatus: text("provider_status"),
+    promptCompressed: boolean("prompt_compressed").notNull().default(false),
+    /** Ceiling that applied to this render: the model's own limit, else the workspace default. */
+    promptLimitChars: integer("prompt_limit_chars"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },

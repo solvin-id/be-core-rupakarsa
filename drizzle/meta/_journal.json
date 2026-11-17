@@ -36,6 +36,13 @@
       "when": 1794876993254,
       "tag": "0004_model_media_type_text",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794900951837,
+      "tag": "0005_generation_progress_prompt_limits",
+      "breakpoints": true
     }
   ]
 }
