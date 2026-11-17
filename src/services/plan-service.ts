@@ -4,8 +4,6 @@ import { getPlanModelAdapter } from "../providers/registry.js";
 import type { ChatContentPart } from "../adapters/types.js";
 import { NEGATIVE_PROMPT, buildPlanBlueprint } from "./plan-blueprint.js";
 
-export type PlanMode = "plan" | "direct";
-
 export interface PlanAttachment {
   url: string;
   kind: "IMAGE" | "VIDEO";
@@ -21,7 +19,6 @@ export interface PlanModelInput {
   contextText: string;
   selectedParams: GenerationParams;
   hasReference: boolean;
-  mode: PlanMode;
 }
 
 export interface PlanModelOutput {
@@ -53,7 +50,7 @@ export function assertAttachmentsSupported(
   }
 }
 
-function stripFences(raw: string): string {
+export function stripFences(raw: string): string {
   const trimmed = raw.trim();
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
   return fenced?.[1]?.trim() ?? trimmed;
@@ -106,7 +103,26 @@ function buildUserText(input: PlanModelInput, attachmentTexts: string[]): string
       ? `[ATTACHMENT NOTES]\n${attachmentTexts.map((text, index) => `#${index + 1} ${text}`).join("\n")}`
       : null,
     `[PARAMS]\n${params}`,
-    `[MODE]\n${input.mode === "plan" ? "Return a reviewable plan." : "Apply the result directly."}`,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n\n");
+}
+
+/**
+ * Direct mode never calls a plan model: the brief, the attachment analyses and the project
+ * pre-context are assembled verbatim, in the same labels the plan prompt uses, and rendered.
+ */
+export function buildDirectPrompt(input: {
+  rawPrompt: string;
+  attachmentTexts: string[];
+  contextText: string;
+}): string {
+  return [
+    `[BRIEF]\n${input.rawPrompt.trim()}`,
+    input.attachmentTexts.length > 0
+      ? `[ATTACHMENT NOTES]\n${input.attachmentTexts.map((text, index) => `#${index + 1} ${text}`).join("\n")}`
+      : null,
+    input.contextText.trim().length > 0 ? `[PRE-CONTEXT]\n${input.contextText.trim()}` : null,
   ]
     .filter((line): line is string => line !== null)
     .join("\n\n");

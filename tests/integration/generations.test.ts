@@ -328,7 +328,7 @@ describe("generation pipeline", () => {
     expect(render.body.error.message).toBe("Model ini bukan model render.");
   });
 
-  it("validates uploads and accepts an image reference", async () => {
+  it("validates uploads and refuses a reference without an analysis model", async () => {
     const { client } = await prepare("upload@example.test", { tokens: 100 });
     const folder = await createFolder(client, "Upload");
     const model = await modelByCode("wan-qwen-5s");
@@ -389,7 +389,9 @@ describe("generation pipeline", () => {
     expect(unknownReference.status).toBe(400);
     expect(unknownReference.body.error.message).toBe("Lampiran tidak dikenal.");
 
-    const withReference = await client.json<{ generation: GenerationBody }>(
+    // Direct mode turns a reference into prompt notes through the analysis model, so without one
+    // the request is refused instead of silently dropping the attachment.
+    const withoutAnalysisModel = await client.json<{ error: { code: string; message: string } }>(
       "/api/creator/generations",
       jsonBody({
         folderId: folder.id,
@@ -401,9 +403,8 @@ describe("generation pipeline", () => {
         selectedParams: { durationSec: 5, resolution: "1080p", aspectRatio: "16:9" },
       }),
     );
-    expect(withReference.status).toBe(201);
-    expect(withReference.body.generation.referenceImageUrl).toBe(uploaded.body.key);
-    await pollGeneration(client, withReference.body.generation.id, ["COMPLETED", "FAILED"]);
+    expect(withoutAnalysisModel.status).toBe(409);
+    expect(withoutAnalysisModel.body.error.code).toBe("ANALYSIS_MODEL_MISSING");
   });
 
   it("deletes a generation inside the active workspace only", async () => {

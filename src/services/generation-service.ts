@@ -26,18 +26,17 @@ import { getPlanModelAdapter } from "../providers/registry.js";
 import { enqueueRender } from "../queue/index.js";
 import { analyzeAsset } from "./analysis-service.js";
 import type { PlanAttachment } from "./plan-service.js";
-import { assertAttachmentsSupported, runPlanModel } from "./plan-service.js";
+import { assertAttachmentsSupported, buildDirectPrompt, runPlanModel } from "./plan-service.js";
 import { loadContextText } from "./pre-context-service.js";
+import { compressPrompt } from "./prompt-compressor.js";
 import { assertDailyGenerationQuota } from "./quota-service.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
 import { queueMail } from "./mail-service.js";
-import { getMailSettings, getPricing } from "./settings.js";
+import { getLimitsSettings, getMailSettings, getPricing } from "./settings.js";
 import { putAsset, urlForAsset } from "./storage-service.js";
 import { commitHold, consumePlanQuota, holdTokens, refundHold } from "./token-service.js";
 
-const MAX_RAW_PROMPT = 2000;
-const MAX_PLANNED_PROMPT = 8000;
 const MAX_ATTACHMENTS = 4;
 
 export interface PlanGenerationInput {
@@ -58,6 +57,8 @@ export interface PlanGenerationResult {
   cost: { tokens: number; usesFreeQuota: boolean };
   workspace: WorkspaceDto;
   analysis: { attachments: { key: string; text: string }[]; preContext: string };
+  /** Final-prompt ceiling the generate step will apply, so the canvas can warn before it runs. */
+  limit: { promptChars: number };
 }
 
 export interface CreateGenerationInput {
@@ -178,8 +179,9 @@ function planAttachmentsOf(resolved: ResolvedAttachment[]): PlanAttachment[] {
 }
 
 export async function planGeneration(input: PlanGenerationInput): Promise<PlanGenerationResult> {
-  if (input.rawPrompt.trim().length === 0 || input.rawPrompt.length > MAX_RAW_PROMPT) {
-    throw validation(`Brief maksimal ${MAX_RAW_PROMPT} karakter dan tidak boleh kosong.`);
+  const limits = await getLimitsSettings(db);
+  if (input.rawPrompt.trim().length === 0 || input.rawPrompt.length > limits.planPromptMaxChars) {
+    throw validation(`Brief maksimal ${limits.planPromptMaxChars} karakter dan tidak boleh kosong.`);
   }
   const folder = await loadFolder(input.workspaceId, input.folderId);
   const model = await loadModel(input.modelId);
@@ -216,7 +218,6 @@ export async function planGeneration(input: PlanGenerationInput): Promise<PlanGe
       aspectRatio: input.aspectRatio,
     },
     hasReference: resolved.length > 0,
-    mode: "plan",
   });
 
   const pricing = await getPricing(db);
@@ -247,12 +248,14 @@ export async function planGeneration(input: PlanGenerationInput): Promise<PlanGe
       attachments: analyses.map((entry) => ({ key: entry.key, text: entry.analysis.text })),
       preContext: contextText,
     },
+    limit: { promptChars: model.maxPromptChars ?? limits.finalPromptMaxChars },
   };
 }
 
 export async function createGeneration(input: CreateGenerationInput): Promise<CreateGenerationResult> {
-  if (input.rawPrompt.trim().length === 0 || input.rawPrompt.length > MAX_RAW_PROMPT) {
-    throw validation(`Brief maksimal ${MAX_RAW_PROMPT} karakter dan tidak boleh kosong.`);
+  const limits = await getLimitsSettings(db);
+  if (input.rawPrompt.trim().length === 0 || input.rawPrompt.length > limits.planPromptMaxChars) {
+    throw validation(`Brief maksimal ${limits.planPromptMaxChars} karakter dan tidak boleh kosong.`);
   }
 
   const folder = await loadFolder(input.workspaceId, input.folderId);
@@ -261,9 +264,13 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
   await assertDailyGenerationQuota(input.workspaceId);
 
   const resolved = await loadAttachments(input.workspaceId, input.userId, input.attachmentKeys);
-  const planModelEnabled = await planModelForAttachments(planAttachmentsOf(resolved));
+  // Plan mode only needs attachment analyses when a plan model can read them; direct mode always
+  // needs them because they are what the server renders from.
+  const analyzed =
+    resolved.length > 0 &&
+    (input.planMode ? await planModelForAttachments(planAttachmentsOf(resolved)) : true);
 
-  const analyses = planModelEnabled
+  const analyses = analyzed
     ? await Promise.all(
         resolved.map(async (item) => ({
           asset: item.asset,
@@ -273,28 +280,22 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
     : [];
   const contextText = await loadContextText(db, folder.id, input.contextIds);
 
-  let finalPrompt = input.finalPrompt?.trim() ?? "";
+  let finalPrompt: string;
   if (input.planMode) {
+    finalPrompt = input.finalPrompt?.trim() ?? "";
     if (finalPrompt.length === 0) throw validation("Buat plan terlebih dahulu.");
-  } else if (finalPrompt.length === 0) {
-    const direct = await runPlanModel({
-      workspaceId: input.workspaceId,
-      folderId: folder.id,
-      renderModel: model,
+  } else {
+    finalPrompt = buildDirectPrompt({
       rawPrompt: input.rawPrompt,
       attachmentTexts: analyses.map((entry) => entry.text),
-      attachments: planAttachmentsOf(resolved),
       contextText,
-      selectedParams: input.selectedParams,
-      hasReference: resolved.length > 0,
-      mode: "direct",
-    });
-    finalPrompt = direct.prompt.trim();
+    }).trim();
   }
 
-  if (finalPrompt.length === 0 || finalPrompt.length > MAX_PLANNED_PROMPT) {
-    throw validation(`Planned prompt maksimal ${MAX_PLANNED_PROMPT} karakter dan tidak boleh kosong.`);
-  }
+  const promptLimit = model.maxPromptChars ?? limits.finalPromptMaxChars;
+  const limited = await compressPrompt({ prompt: finalPrompt, limit: promptLimit });
+  finalPrompt = limited.prompt;
+  if (finalPrompt.length === 0) throw validation("Prompt final tidak boleh kosong.");
 
   const firstAttachment = resolved[0] ?? null;
   const analysisSnapshot = analyses
@@ -328,6 +329,8 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
         outputUrl: null,
         errorMessage: null,
         refunded: false,
+        promptCompressed: limited.compressed,
+        promptLimitChars: promptLimit,
         completedAt: null,
       })
       .returning();
@@ -404,7 +407,7 @@ export function extensionForMime(mime: string): string {
   return MIME_EXTENSIONS[mime] ?? "bin";
 }
 
-/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — public and immutable. */
+/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — immutable, session-scoped. */
 export function generationOutputKey(workspaceId: string, generationId: string, mime: string): string {
   return `workspaces/${workspaceId}/generations/${generationId}.${extensionForMime(mime)}`;
 }

@@ -146,7 +146,7 @@ describe("higgsfield async video render", () => {
 
     expect(submissions).toHaveLength(1);
     expect(submissions[0]).toMatchObject({
-      prompt: "Slow cinematic waves at sunset",
+      prompt: "[BRIEF]\nOmbak senja",
       duration: 10,
       resolution: "720p",
       aspect_ratio: "16:9",

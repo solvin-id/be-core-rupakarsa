@@ -243,6 +243,7 @@ export const AiModelSchema = z
     source: z.string(),
     allowedParams: ModelAllowedParamsSchema,
     tokenCost: z.number().int(),
+    maxPromptChars: z.number().int().nullable(),
     isActive: z.boolean(),
     isDefault: z.boolean(),
   })
@@ -317,6 +318,10 @@ export const PublicConfigSchema = z
       })
       .nullable(),
     defaults: z.object({ videoModelId: z.string().nullable() }),
+    limits: z.object({
+      planPromptMaxChars: z.number().int(),
+      finalPromptMaxChars: z.number().int(),
+    }),
   })
   .openapi("PublicConfig");
 
@@ -340,8 +345,18 @@ export const PlanResponseSchema = z
       attachments: z.array(z.object({ key: z.string(), text: z.string() })),
       preContext: z.string(),
     }),
+    limit: z.object({ promptChars: z.number().int() }),
   })
   .openapi("PlanResponse");
+
+export const LimitsSettingsSchema = z
+  .object({
+    generationsPerDayPerWorkspace: z.number().int(),
+    planRequestsPerHourPerUser: z.number().int(),
+    planPromptMaxChars: z.number().int(),
+    finalPromptMaxChars: z.number().int(),
+  })
+  .openapi("LimitsSettings");
 
 export const CreateGenerationResponseSchema = z
   .object({
@@ -589,6 +604,7 @@ export type AdminContactDto = z.infer<typeof AdminContactSchema>;
 export type PricingDto = z.infer<typeof PricingSchema>;
 export type PublicConfigDto = z.infer<typeof PublicConfigSchema>;
 export type PlanResponseDto = z.infer<typeof PlanResponseSchema>;
+export type LimitsSettingsDto = z.infer<typeof LimitsSettingsSchema>;
 export type CreateGenerationResponseDto = z.infer<typeof CreateGenerationResponseSchema>;
 export type UploadResponseDto = z.infer<typeof UploadResponseSchema>;
 export type ModelTemplateDto = z.infer<typeof ModelTemplateSchema>;

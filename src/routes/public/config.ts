@@ -7,7 +7,7 @@ import { env } from "../../env.js";
 import { defaultHook } from "../../http/route-helpers.js";
 import { PublicConfigSchema } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
-import { getAiSettings, getContact, getPricing } from "../../services/settings.js";
+import { getAiSettings, getContact, getLimitsSettings, getPricing } from "../../services/settings.js";
 
 export const publicRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
 
@@ -24,10 +24,11 @@ const configRoute = createRoute({
 });
 
 publicRoutes.openapi(configRoute, async (c) => {
-  const [contact, pricing, ai] = await Promise.all([
+  const [contact, pricing, ai, limits] = await Promise.all([
     getContact(db),
     getPricing(db),
     getAiSettings(db),
+    getLimitsSettings(db),
   ]);
 
   const planModel = ai.planModelId
@@ -53,6 +54,10 @@ publicRoutes.openapi(configRoute, async (c) => {
           }
         : null,
       defaults: { videoModelId: ai.defaultVideoModelId },
+      limits: {
+        planPromptMaxChars: limits.planPromptMaxChars,
+        finalPromptMaxChars: limits.finalPromptMaxChars,
+      },
     },
     200,
   );

@@ -155,7 +155,7 @@ describe("async video render", () => {
     expect(submissions).toHaveLength(1);
     expect(submissions[0]).toMatchObject({
       model: "vid-model",
-      prompt: "Video uji",
+      prompt: "[BRIEF]\nVideo uji",
       duration: 5,
       resolution: "720p",
       aspect_ratio: "16:9",

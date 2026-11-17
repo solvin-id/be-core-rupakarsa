@@ -191,6 +191,7 @@ export function toModel(row: AiModelRow, isDefault = false): AiModelDto {
     source: row.source,
     allowedParams: row.allowedParams,
     tokenCost: row.tokenCost,
+    maxPromptChars: row.maxPromptChars,
     isActive: row.isActive,
     isDefault,
   };

@@ -8,10 +8,16 @@ import { aiModels } from "../../db/schema.js";
 import { validation } from "../../http/errors.js";
 import { clientIp } from "../../http/middleware.js";
 import { defaultHook } from "../../http/route-helpers.js";
-import { AdminContactSchema, ErrorResponseSchema } from "../../http/schemas.js";
+import { AdminContactSchema, ErrorResponseSchema, LimitsSettingsSchema } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
 import { logAudit } from "../../services/audit-service.js";
-import { SETTING_KEYS, getAiSettings, getContact, writeSetting } from "../../services/settings.js";
+import {
+  SETTING_KEYS,
+  getAiSettings,
+  getContact,
+  getLimitsSettings,
+  writeSetting,
+} from "../../services/settings.js";
 
 export const cmsSettingsRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
 
@@ -19,6 +25,7 @@ const errorContent = { "application/json": { schema: ErrorResponseSchema } };
 
 cmsSettingsRoutes.use("/settings/contact", sessionGuard(), requireCms());
 cmsSettingsRoutes.use("/settings/ai", sessionGuard(), requireCms());
+cmsSettingsRoutes.use("/settings/limits", sessionGuard(), requireCms());
 
 const getContactRoute = createRoute({
   method: "get",
@@ -212,6 +219,73 @@ cmsSettingsRoutes.openapi(putAiRoute, async (c) => {
     action: "settings.ai.update",
     targetType: "app_settings",
     targetId: SETTING_KEYS.ai,
+    metadata: settings,
+    ip: clientIp(c),
+  });
+
+  return c.json(settings, 200);
+});
+
+const getLimitsRoute = createRoute({
+  method: "get",
+  path: "/settings/limits",
+  tags: ["CMS settings"],
+  responses: {
+    200: {
+      description: "Quota and prompt ceilings",
+      content: { "application/json": { schema: LimitsSettingsSchema } },
+    },
+  },
+});
+
+cmsSettingsRoutes.openapi(getLimitsRoute, async (c) => {
+  return c.json(await getLimitsSettings(db), 200);
+});
+
+const putLimitsRoute = createRoute({
+  method: "put",
+  path: "/settings/limits",
+  tags: ["CMS settings"],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            generationsPerDayPerWorkspace: z.number().int().min(1).max(1000),
+            planRequestsPerHourPerUser: z.number().int().min(1).max(10000),
+            planPromptMaxChars: z.number().int().min(200).max(20000),
+            finalPromptMaxChars: z.number().int().min(200).max(32000),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Limits saved",
+      content: { "application/json": { schema: LimitsSettingsSchema } },
+    },
+    400: { description: "Invalid limits", content: errorContent },
+  },
+});
+
+cmsSettingsRoutes.openapi(putLimitsRoute, async (c) => {
+  const auth = c.get("auth");
+  const body = c.req.valid("json");
+
+  const settings = {
+    generationsPerDayPerWorkspace: body.generationsPerDayPerWorkspace,
+    planRequestsPerHourPerUser: body.planRequestsPerHourPerUser,
+    planPromptMaxChars: body.planPromptMaxChars,
+    finalPromptMaxChars: body.finalPromptMaxChars,
+  };
+  await writeSetting(db, SETTING_KEYS.limits, settings);
+
+  await logAudit(db, {
+    actorUserId: auth.user.id,
+    action: "settings.limits.update",
+    targetType: "app_settings",
+    targetId: SETTING_KEYS.limits,
     metadata: settings,
     ip: clientIp(c),
   });

@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { encryptSecret } from "../../src/crypto/encryption.js";
 import { db } from "../../src/db/client.js";
-import { aiModels, aiProviders, generations, planUsages, workspaces } from "../../src/db/schema.js";
+import { aiModels, aiProviders, workspaces } from "../../src/db/schema.js";
 import { writeSetting, SETTING_KEYS } from "../../src/services/settings.js";
 import {
   createAccount,
@@ -257,39 +257,6 @@ describe("plan model pipeline", () => {
     expect(imageResponse.body.error.message).toBe(
       "Model plan tidak mendukung lampiran gambar. Pilih model plan lain atau hapus lampiran.",
     );
-  });
-
-  it("answers a direct-mode generation with the plan model output and no plan usage", async () => {
-    const fx = await fixture("plan-direct@example.test", "vision");
-    const attachment = await uploadPng(fx.client);
-
-    const response = await fx.client.json<{ generation: { id: string } }>(
-      "/api/creator/generations",
-      jsonBody({
-        folderId: fx.folderId,
-        modelId: fx.renderModelId,
-        rawPrompt: "Close-up rempah",
-        planMode: false,
-        finalPrompt: null,
-        attachmentKeys: [attachment.key],
-        selectedParams: { resolution: "1k", aspectRatio: "1:1" },
-      }),
-    );
-
-    expect(response.status).toBe(201);
-    const [row] = await db
-      .select()
-      .from(generations)
-      .where(eq(generations.id, response.body.generation.id))
-      .limit(1);
-    expect(row?.finalPrompt).toBe("MOCK PROMPT for vision");
-    expect(row?.plannedPrompt).toBe("MOCK PROMPT for vision");
-    expect(row?.rawPrompt).toBe("Close-up rempah");
-    expect(row?.analysisSnapshot.length).toBeGreaterThan(0);
-    expect(row?.referenceImageUrl).toBe(attachment.key);
-
-    const usage = await db.select().from(planUsages).where(eq(planUsages.workspaceId, fx.workspaceId));
-    expect(usage).toHaveLength(0);
   });
 
   it("falls back to the deterministic blueprint without a plan model and ignores attachments", async () => {

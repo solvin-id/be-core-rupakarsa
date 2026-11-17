@@ -160,6 +160,7 @@ const createModelRoute = createRoute({
             outputCapabilities: z.array(MediaCapabilitySchema).optional(),
             allowedParams: ModelAllowedParamsSchema,
             tokenCost: z.number().int(),
+            maxPromptChars: z.number().int().min(0).max(32000).nullable().optional(),
             isActive: z.boolean().default(true),
           }),
         },
@@ -214,6 +215,7 @@ cmsModelRoutes.openapi(createModelRoute, async (c) => {
       source: "MANUAL",
       allowedParams: body.allowedParams,
       tokenCost: body.tokenCost,
+      maxPromptChars: body.maxPromptChars ?? null,
       isActive: body.isActive,
     })
     .returning();
@@ -247,6 +249,7 @@ const patchModelRoute = createRoute({
             outputCapabilities: z.array(MediaCapabilitySchema).optional(),
             source: z.string().optional(),
             tokenCost: z.number().int().optional(),
+            maxPromptChars: z.number().int().min(0).max(32000).nullable().optional(),
             allowedParams: ModelAllowedParamsSchema.optional(),
             isActive: z.boolean().optional(),
           }),
@@ -286,6 +289,7 @@ cmsModelRoutes.openapi(patchModelRoute, async (c) => {
     outputCapabilities?: ModelCapability[];
     source?: string;
     tokenCost?: number;
+    maxPromptChars?: number | null;
     allowedParams?: { durations?: number[]; resolutions: string[]; aspectRatios: string[] };
     isActive?: boolean;
   } = {};
@@ -300,6 +304,7 @@ cmsModelRoutes.openapi(patchModelRoute, async (c) => {
   if (body.outputCapabilities !== undefined) patch.outputCapabilities = body.outputCapabilities;
   if (body.source !== undefined) patch.source = body.source.trim().toUpperCase();
   if (body.tokenCost !== undefined) patch.tokenCost = body.tokenCost;
+  if (body.maxPromptChars !== undefined) patch.maxPromptChars = body.maxPromptChars;
   if (body.allowedParams !== undefined) patch.allowedParams = body.allowedParams;
   if (body.isActive !== undefined) patch.isActive = body.isActive;
 

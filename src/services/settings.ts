@@ -76,6 +76,10 @@ export interface SecuritySettings {
 export interface LimitsSettings {
   generationsPerDayPerWorkspace: number;
   planRequestsPerHourPerUser: number;
+  /** Brief textarea ceiling in the Plan Canvas. */
+  planPromptMaxChars: number;
+  /** Default final-prompt ceiling for models without their own `max_prompt_chars`. */
+  finalPromptMaxChars: number;
 }
 
 export const DEFAULT_PRICING: Pricing = {
@@ -133,6 +137,8 @@ export const DEFAULT_SECURITY: SecuritySettings = {
 export const DEFAULT_LIMITS: LimitsSettings = {
   generationsPerDayPerWorkspace: 50,
   planRequestsPerHourPerUser: 60,
+  planPromptMaxChars: 2000,
+  finalPromptMaxChars: 4000,
 };
 
 export async function readSetting<T>(db: DbHandle, key: string, fallback: T): Promise<T> {
