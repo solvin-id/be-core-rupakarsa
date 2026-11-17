@@ -2,6 +2,7 @@ import { AppError } from "../http/errors.js";
 import type { AiModelRow, AiProviderRow } from "../db/schema.js";
 import { joinUrl, providerAuthHeaders, resolveProviderKey } from "../services/model-sync-service.js";
 import type { RenderAdapter, RenderRequest, RenderResult } from "./types.js";
+import { waitFor } from "./wait-for.js";
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 120_000;
@@ -30,20 +31,6 @@ interface StatusPayload {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-async function waitFor(ms: number, signal: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new AppError(504, "PROVIDER_TIMEOUT", "Render melewati batas waktu."));
-      },
-      { once: true },
-    );
-  });
 }
 
 export class HiggsfieldRenderAdapter implements RenderAdapter {
