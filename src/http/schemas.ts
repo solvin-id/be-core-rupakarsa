@@ -313,18 +313,27 @@ export const PricingSchema = z
   })
   .openapi("Pricing");
 
+/** A wired AI model, as the studio needs it to decide which inputs are accepted. */
+export const PublicModelRefSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  inputCapabilities: z.array(MediaCapabilitySchema),
+});
+
 export const PublicConfigSchema = z
   .object({
     contact: AdminContactSchema,
     pricing: PricingSchema,
     features: z.object({ simulation: z.boolean() }),
-    planModel: z
-      .object({
-        id: z.string(),
-        name: z.string(),
-        inputCapabilities: z.array(MediaCapabilitySchema),
-      })
-      .nullable(),
+    planModel: PublicModelRefSchema.nullable(),
+    /**
+     * Analysis models are their own capability gate: attachment analysis and project-context media
+     * never touch the plan model, so the studio cannot infer them from `planModel`.
+     */
+    analysisModels: z.object({
+      image: PublicModelRefSchema.nullable(),
+      video: PublicModelRefSchema.nullable(),
+    }),
     defaults: z.object({ videoModelId: z.string().nullable() }),
     limits: z.object({
       planPromptMaxChars: z.number().int(),

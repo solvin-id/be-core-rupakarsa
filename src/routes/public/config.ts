@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 
 import { db } from "../../db/client.js";
@@ -31,28 +31,37 @@ publicRoutes.openapi(configRoute, async (c) => {
     getLimitsSettings(db),
   ]);
 
-  const planModel = ai.planModelId
-    ? (
-        await db
-          .select()
-          .from(aiModels)
-          .where(eq(aiModels.id, ai.planModelId))
-          .limit(1)
-      )[0] ?? null
-    : null;
+  // One lookup for every wired model: the studio gates each input on its own model, not on the
+  // plan model (analysis and plan are independent services).
+  const wiredIds = [ai.planModelId, ai.analysisModelId, ai.videoAnalysisModelId].filter(
+    (id): id is string => Boolean(id),
+  );
+  const wiredRows = wiredIds.length
+    ? await db.select().from(aiModels).where(inArray(aiModels.id, wiredIds))
+    : [];
+  const byId = new Map(wiredRows.map((row) => [row.id, row]));
+
+  function modelRef(id: string | null) {
+    const row = id ? byId.get(id) : undefined;
+    return row
+      ? {
+          id: row.id,
+          name: row.displayName,
+          inputCapabilities: row.inputCapabilities,
+        }
+      : null;
+  }
 
   return c.json(
     {
       contact,
       pricing,
       features: { simulation: env.SIMULATION_MODE },
-      planModel: planModel
-        ? {
-            id: planModel.id,
-            name: planModel.displayName,
-            inputCapabilities: planModel.inputCapabilities,
-          }
-        : null,
+      planModel: modelRef(ai.planModelId),
+      analysisModels: {
+        image: modelRef(ai.analysisModelId),
+        video: modelRef(ai.videoAnalysisModelId),
+      },
       defaults: { videoModelId: ai.defaultVideoModelId },
       limits: {
         planPromptMaxChars: limits.planPromptMaxChars,
