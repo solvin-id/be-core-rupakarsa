@@ -17,7 +17,7 @@ import {
 import type { GenerationParams } from "./schema.js";
 import { env } from "../env.js";
 import { buildPosterSvg } from "../adapters/stub-render.js";
-import { publicUrlFor, resolveStorage } from "../services/storage-service.js";
+import { putAsset } from "../services/storage-service.js";
 import { MODEL_TEMPLATES } from "../services/model-catalog.js";
 import {
   DEFAULT_AI,
@@ -70,7 +70,7 @@ const PROVIDERS: ProviderSeed[] = [
   {
     code: "HIGGSFIELD",
     name: "Higgsfield",
-    baseUrl: "https://platform.higgsfield.ai",
+    baseUrl: "https://api.higgsfield.ai",
     kind: "HIGGSFIELD",
     isFixed: true,
     modelsPath: "/v1/models",
@@ -627,7 +627,6 @@ export async function seedDemo(tx: Tx): Promise<void> {
 
   const modelRows = await tx.select().from(aiModels);
   const modelByCode = new Map(modelRows.map((row) => [row.code, row]));
-  const storage = await resolveStorage(IDS.workspace.alfateve);
 
   const existingGenerations = await tx
     .select({ id: generations.id })
@@ -635,11 +634,16 @@ export async function seedDemo(tx: Tx): Promise<void> {
     .where(eq(generations.workspaceId, IDS.workspace.alfateve));
 
   if (existingGenerations.length === 0) {
+    // The scene chain orders renders per folder, so every folder counts from one.
+    const sequenceByFolder = new Map<string, number>();
     for (const generation of DEMO_GENERATIONS) {
       const model = modelByCode.get(generation.modelCode);
       if (!model) continue;
 
-      let outputUrl: string | null = null;
+      const sequence = (sequenceByFolder.get(generation.folderId) ?? 0) + 1;
+      sequenceByFolder.set(generation.folderId, sequence);
+
+      let outputKey: string | null = null;
       if (generation.status === "COMPLETED") {
         const key = `workspaces/${IDS.workspace.alfateve}/generations/${generation.id}.svg`;
         const svg = buildPosterSvg(generation.id, {
@@ -648,8 +652,9 @@ export async function seedDemo(tx: Tx): Promise<void> {
           mediaType: generation.mediaType,
           selectedParams: generation.selectedParams,
         });
-        await storage.driver.put(key, Buffer.from(svg, "utf8"), "image/svg+xml");
-        outputUrl = publicUrlFor(key, storage.driver);
+        // Goes through the storage service so the media route can resolve the asset row.
+        await putAsset(IDS.workspace.alfateve, key, Buffer.from(svg, "utf8"), "image/svg+xml");
+        outputKey = key;
       }
 
       await tx.insert(generations).values({
@@ -667,7 +672,8 @@ export async function seedDemo(tx: Tx): Promise<void> {
         tokensCharged: generation.tokensCharged,
         status: generation.status,
         externalJobId: generation.externalJobId,
-        outputUrl,
+        outputKey,
+        sequence,
         errorMessage: generation.errorMessage,
         refunded: generation.status === "FAILED",
         createdAt: new Date(generation.createdAt),

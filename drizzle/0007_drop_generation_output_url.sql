@@ -1,0 +1,1 @@
+ALTER TABLE "generations" DROP COLUMN "output_url";

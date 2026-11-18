@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 export const userRoleEnum = pgEnum("user_role", ["USER", "SUPERADMIN"]);
 export const workspaceRoleEnum = pgEnum("workspace_role", ["OWNER", "ADMIN", "MEMBER"]);
@@ -203,6 +204,10 @@ export const aiModels = pgTable(
     tokenCost: integer("token_cost").notNull().default(0),
     /** Per-model final-prompt ceiling; null falls back to `limits.finalPromptMaxChars`. */
     maxPromptChars: integer("max_prompt_chars"),
+    /** Deep Thinking flag for Wan 3.0 workflows that declare `enable_thinking`. */
+    thinkingEnabled: boolean("thinking_enabled").notNull().default(false),
+    /** Provider-side Soul ID uuid passed as `custom_reference_id` to SOUL models. */
+    customReferenceId: text("custom_reference_id"),
     isActive: boolean("is_active").notNull().default(true),
   },
   (table) => [
@@ -237,7 +242,14 @@ export const generations = pgTable(
     tokensCharged: integer("tokens_charged").notNull().default(0),
     status: generationStatusEnum("status").notNull().default("QUEUED"),
     externalJobId: text("external_job_id"),
-    outputUrl: text("output_url"),
+    /** Authoritative storage key; the URL is derived and signed at read time. */
+    outputKey: text("output_key"),
+    /** Position of this render inside its folder, used to order the scene chain. */
+    sequence: integer("sequence").notNull().default(0),
+    /** Previous scene this render continued from, when continuity was on. */
+    continuitySourceId: uuid("continuity_source_id").references((): AnyPgColumn => generations.id, {
+      onDelete: "set null",
+    }),
     outputMime: text("output_mime"),
     outputSize: integer("output_size").notNull().default(0),
     errorMessage: text("error_message"),
@@ -256,7 +268,73 @@ export const generations = pgTable(
     index("generations_folder_created_idx").on(table.folderId, table.createdAt),
     index("generations_workspace_idx").on(table.workspaceId),
     index("generations_status_idx").on(table.status),
+    uniqueIndex("generations_folder_sequence_idx").on(table.folderId, table.sequence),
   ],
+);
+
+/**
+ * Append-only audit of every outbound AI request and terminal render event. CMS-only: the creator
+ * API never exposes it. A failed insert must never fail the operation it describes.
+ */
+export const aiActivityLogs = pgTable(
+  "ai_activity_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    folderId: uuid("folder_id").references(() => folders.id, { onDelete: "set null" }),
+    generationId: uuid("generation_id").references(() => generations.id, { onDelete: "set null" }),
+    kind: text("kind").notNull(),
+    status: text("status").notNull(),
+    providerId: uuid("provider_id").references(() => aiProviders.id, { onDelete: "set null" }),
+    modelId: uuid("model_id").references(() => aiModels.id, { onDelete: "set null" }),
+    modelName: text("model_name").notNull().default(""),
+    mediaType: mediaTypeEnum("media_type"),
+    latencyMs: integer("latency_ms").notNull().default(0),
+    promptChars: integer("prompt_chars").notNull().default(0),
+    responseChars: integer("response_chars").notNull().default(0),
+    tokensUsed: integer("tokens_used").notNull().default(0),
+    externalJobId: text("external_job_id"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    requestText: text("request_text").notNull().default(""),
+    responseText: text("response_text").notNull().default(""),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("ai_activity_logs_created_idx").on(table.createdAt),
+    index("ai_activity_logs_workspace_created_idx").on(table.workspaceId, table.createdAt),
+    index("ai_activity_logs_kind_created_idx").on(table.kind, table.createdAt),
+    index("ai_activity_logs_status_created_idx").on(table.status, table.createdAt),
+    index("ai_activity_logs_generation_idx").on(table.generationId),
+  ],
+);
+
+/** Higgsfield Soul ID training records, reusable as `custom_reference_id` on SOUL models. */
+export const aiCharacterReferences = pgTable(
+  "ai_character_references",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => aiProviders.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    modelVersion: text("model_version").notNull().default("v1"),
+    externalId: text("external_id"),
+    status: text("status").notNull().default("NOT_READY"),
+    thumbnailUrl: text("thumbnail_url"),
+    failReason: text("fail_reason"),
+    inputImageUrls: text("input_image_urls").array().notNull().default(sql`ARRAY[]::text[]`),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [uniqueIndex("ai_character_references_external_idx").on(table.externalId)],
 );
 
 export const tokenLedger = pgTable(
@@ -490,6 +568,8 @@ export type FolderRow = typeof folders.$inferSelect;
 export type AiProviderRow = typeof aiProviders.$inferSelect;
 export type AiModelRow = typeof aiModels.$inferSelect;
 export type GenerationRow = typeof generations.$inferSelect;
+export type AiActivityLogRow = typeof aiActivityLogs.$inferSelect;
+export type AiCharacterReferenceRow = typeof aiCharacterReferences.$inferSelect;
 export type MediaAssetRow = typeof mediaAssets.$inferSelect;
 export type FolderContextRow = typeof folderContexts.$inferSelect;
 export type AssetAnalysisRow = typeof assetAnalyses.$inferSelect;

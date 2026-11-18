@@ -6,6 +6,7 @@ import { hashPassword } from "../../src/auth/password.js";
 import { createApp } from "../../src/app.js";
 import { db } from "../../src/db/client.js";
 import { seedPlatform } from "../../src/db/seed.js";
+import { settleInlineRenders } from "../../src/queue/inline.js";
 import { aiModels, users, workspaceMemberships, workspaces } from "../../src/db/schema.js";
 import type { AiModelRow, UserRow, WorkspaceRow } from "../../src/db/schema.js";
 
@@ -38,11 +39,14 @@ export interface CreateAccountInput {
 }
 
 export async function resetDatabase(): Promise<void> {
+  // The inline driver renders in the background; truncating under one deadlocks two transactions.
+  await settleInlineRenders();
   await db.execute(sql`
     TRUNCATE TABLE
       users, workspaces, workspace_memberships, workspace_join_requests, sessions,
       folders, ai_providers, ai_models, generations, token_ledger, plan_usages,
       media_assets, app_settings, folder_contexts, asset_analyses, generation_attachments,
+      ai_activity_logs, ai_character_references,
       workspace_storage, password_reset_tokens, email_outbox, orders, audit_logs
     RESTART IDENTITY CASCADE
   `);
