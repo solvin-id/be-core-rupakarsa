@@ -160,7 +160,9 @@ const createModelRoute = createRoute({
             outputCapabilities: z.array(MediaCapabilitySchema).optional(),
             allowedParams: ModelAllowedParamsSchema,
             tokenCost: z.number().int(),
-            maxPromptChars: z.number().int().min(0).max(32000).nullable().optional(),
+            maxPromptChars: z.number().int().min(1).max(32000).nullable().optional(),
+            thinkingEnabled: z.boolean().optional(),
+            customReferenceId: z.string().nullable().optional(),
             isActive: z.boolean().default(true),
           }),
         },
@@ -216,6 +218,8 @@ cmsModelRoutes.openapi(createModelRoute, async (c) => {
       allowedParams: body.allowedParams,
       tokenCost: body.tokenCost,
       maxPromptChars: body.maxPromptChars ?? null,
+      thinkingEnabled: body.thinkingEnabled ?? false,
+      customReferenceId: body.customReferenceId ?? null,
       isActive: body.isActive,
     })
     .returning();
@@ -249,7 +253,9 @@ const patchModelRoute = createRoute({
             outputCapabilities: z.array(MediaCapabilitySchema).optional(),
             source: z.string().optional(),
             tokenCost: z.number().int().optional(),
-            maxPromptChars: z.number().int().min(0).max(32000).nullable().optional(),
+            maxPromptChars: z.number().int().min(1).max(32000).nullable().optional(),
+            thinkingEnabled: z.boolean().optional(),
+            customReferenceId: z.string().nullable().optional(),
             allowedParams: ModelAllowedParamsSchema.optional(),
             isActive: z.boolean().optional(),
           }),
@@ -290,6 +296,8 @@ cmsModelRoutes.openapi(patchModelRoute, async (c) => {
     source?: string;
     tokenCost?: number;
     maxPromptChars?: number | null;
+    thinkingEnabled?: boolean;
+    customReferenceId?: string | null;
     allowedParams?: { durations?: number[]; resolutions: string[]; aspectRatios: string[] };
     isActive?: boolean;
   } = {};
@@ -305,6 +313,10 @@ cmsModelRoutes.openapi(patchModelRoute, async (c) => {
   if (body.source !== undefined) patch.source = body.source.trim().toUpperCase();
   if (body.tokenCost !== undefined) patch.tokenCost = body.tokenCost;
   if (body.maxPromptChars !== undefined) patch.maxPromptChars = body.maxPromptChars;
+  if (body.thinkingEnabled !== undefined) patch.thinkingEnabled = body.thinkingEnabled;
+  if (body.customReferenceId !== undefined) {
+    patch.customReferenceId = body.customReferenceId?.trim() || null;
+  }
   if (body.allowedParams !== undefined) patch.allowedParams = body.allowedParams;
   if (body.isActive !== undefined) patch.isActive = body.isActive;
 

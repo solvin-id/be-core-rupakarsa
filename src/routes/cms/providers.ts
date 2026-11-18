@@ -17,6 +17,7 @@ import {
   SyncResultSchema,
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
+import { logAiActivity } from "../../services/ai-activity-log.js";
 import { logAudit } from "../../services/audit-service.js";
 import { fetchRemoteCatalog, syncProviderModels } from "../../services/model-sync-service.js";
 
@@ -274,8 +275,18 @@ cmsProviderRoutes.openapi(testProviderRoute, async (c) => {
   const [provider] = await db.select().from(aiProviders).where(eq(aiProviders.id, id)).limit(1);
   if (!provider) throw notFound("Provider tidak ditemukan.");
 
+  const startedAt = Date.now();
   try {
     const catalog = await fetchRemoteCatalog(provider);
+    await logAiActivity({
+      kind: "PROVIDER_TEST",
+      status: "SUCCESS",
+      providerId: provider.id,
+      modelName: provider.name,
+      latencyMs: Date.now() - startedAt,
+      responseChars: catalog.models.length,
+      metadata: { providerCode: provider.code, models: catalog.models.length },
+    });
     return c.json(
       {
         ok: true,
@@ -285,6 +296,15 @@ cmsProviderRoutes.openapi(testProviderRoute, async (c) => {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Tidak dapat menghubungi provider.";
+    await logAiActivity({
+      kind: "PROVIDER_TEST",
+      status: "ERROR",
+      providerId: provider.id,
+      modelName: provider.name,
+      latencyMs: Date.now() - startedAt,
+      errorMessage: message,
+      metadata: { providerCode: provider.code },
+    });
     return c.json({ ok: false, message }, 200);
   }
 });
@@ -331,7 +351,23 @@ const syncModelsRoute = createRoute({
 cmsProviderRoutes.openapi(syncModelsRoute, async (c) => {
   const auth = c.get("auth");
   const { id } = c.req.valid("param");
+  const startedAt = Date.now();
+  const [provider] = await db.select().from(aiProviders).where(eq(aiProviders.id, id)).limit(1);
   const result = await syncProviderModels(db, id);
+
+  await logAiActivity({
+    kind: "MODEL_SYNC",
+    status: "SUCCESS",
+    providerId: id,
+    modelName: provider?.name ?? "",
+    latencyMs: Date.now() - startedAt,
+    metadata: {
+      providerCode: provider?.code ?? "",
+      added: result.added,
+      updated: result.updated,
+      skipped: result.skipped,
+    },
+  });
 
   await logAudit(db, {
     actorUserId: auth.user.id,

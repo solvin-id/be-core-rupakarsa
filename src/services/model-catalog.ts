@@ -1,7 +1,11 @@
 import type { ModelAllowedParams } from "../db/schema.js";
+import type { ModelRequestField } from "./model-capabilities.js";
 
-/** Request fields a workflow actually accepts; higgsfield rejects any field it does not declare. */
-export type ModelRequestField = "duration" | "resolution" | "aspectRatio";
+/**
+ * Request fields a workflow actually accepts; higgsfield rejects any field it does not declare.
+ * Re-exported so callers that only know the catalog keep one import.
+ */
+export type { ModelRequestField };
 
 export interface ModelTemplate {
   providerCode: string;
@@ -33,6 +37,7 @@ export const MODEL_TEMPLATES: ModelTemplate[] = [
     },
     tokenCost: 35,
     providerModelId: "alibaba/wan-3.0/text-to-video",
+    requestFields: ["duration", "resolution", "aspectRatio", "thinking"],
   },
   {
     providerCode: "HIGGSFIELD",
@@ -46,6 +51,7 @@ export const MODEL_TEMPLATES: ModelTemplate[] = [
     },
     tokenCost: 18,
     providerModelId: "alibaba/wan-3.0/text-to-video",
+    requestFields: ["duration", "resolution", "aspectRatio", "thinking"],
   },
   {
     providerCode: "HIGGSFIELD",
@@ -103,6 +109,7 @@ export const MODEL_TEMPLATES: ModelTemplate[] = [
     },
     tokenCost: 40,
     providerModelId: "minimax/h3/text-to-video",
+    requestFields: ["duration", "resolution", "aspectRatio"],
   },
   {
     providerCode: "HIGGSFIELD",
@@ -116,6 +123,7 @@ export const MODEL_TEMPLATES: ModelTemplate[] = [
     },
     tokenCost: 30,
     providerModelId: "alibaba/wan-3.0-prime/text-to-video",
+    requestFields: ["duration", "resolution", "aspectRatio", "thinking"],
   },
   {
     providerCode: "HIGGSFIELD",
@@ -128,6 +136,7 @@ export const MODEL_TEMPLATES: ModelTemplate[] = [
     },
     tokenCost: 2,
     providerModelId: "alibaba/qwen-image-3/text-to-image",
+    requestFields: ["resolution", "aspectRatio"],
   },
   {
     providerCode: "HIGGSFIELD",
@@ -140,6 +149,61 @@ export const MODEL_TEMPLATES: ModelTemplate[] = [
     },
     tokenCost: 2,
     providerModelId: "higgsfield/ads-studio/v1.0",
+    requestFields: ["resolution", "aspectRatio"],
+  },
+  {
+    providerCode: "HIGGSFIELD",
+    code: "wan-3.0-i2v",
+    displayName: "Wan 3.0 Image to Video",
+    mediaType: "VIDEO",
+    allowedParams: {
+      durations: [5, 10, 15, 20, 25, 30],
+      resolutions: ["480p", "720p", "1080p"],
+      aspectRatios: ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    },
+    tokenCost: 22,
+    providerModelId: "alibaba/wan-3.0/image-to-video",
+    requestFields: ["duration", "resolution", "aspectRatio", "image", "thinking"],
+  },
+  {
+    providerCode: "HIGGSFIELD",
+    code: "wan-3.0-ref",
+    displayName: "Wan 3.0 Reference to Video",
+    mediaType: "VIDEO",
+    allowedParams: {
+      durations: [5, 10, 15, 20, 25, 30],
+      resolutions: ["480p", "720p", "1080p"],
+      aspectRatios: ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    },
+    tokenCost: 26,
+    providerModelId: "alibaba/wan-3.0/reference-to-video",
+    requestFields: ["duration", "resolution", "aspectRatio", "imageUrls", "videoUrls", "thinking"],
+  },
+  {
+    providerCode: "HIGGSFIELD",
+    code: "soul-v2",
+    displayName: "SOUL V2",
+    mediaType: "IMAGE",
+    allowedParams: {
+      resolutions: ["720p", "1080p"],
+      aspectRatios: ["9:16", "16:9", "4:3", "3:4", "1:1", "2:3", "3:2"],
+    },
+    tokenCost: 2,
+    providerModelId: "higgsfield-ai/soul/v2/standard",
+    requestFields: ["resolution", "aspectRatio", "customReference"],
+  },
+  {
+    providerCode: "HIGGSFIELD",
+    code: "soul-standard",
+    displayName: "SOUL",
+    mediaType: "IMAGE",
+    allowedParams: {
+      resolutions: ["720p", "1080p"],
+      aspectRatios: ["9:16", "16:9", "4:3", "3:4", "1:1", "2:3", "3:2"],
+    },
+    tokenCost: 2,
+    providerModelId: "higgsfield-ai/soul/standard",
+    requestFields: ["resolution", "aspectRatio", "customReference"],
   },
 ];
 

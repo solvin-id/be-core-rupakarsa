@@ -71,6 +71,8 @@ async function postJson(
 
 /** One adapter for every OpenAI-compatible publisher (DeepSeek, OpenRouter, vLLM, ...). */
 export class OpenAiCompatibleAdapter implements RenderAdapter, VideoRenderAdapter {
+  readonly supportsImageJobs = false;
+
   private readonly provider: AiProviderRow;
   private readonly model: AiModelRow | null;
 
@@ -170,7 +172,7 @@ export class OpenAiCompatibleAdapter implements RenderAdapter, VideoRenderAdapte
         ? { resolution: input.selectedParams.resolution }
         : {}),
       ...(input.selectedParams.aspectRatio ? { aspect_ratio: input.selectedParams.aspectRatio } : {}),
-      ...(input.referenceUrl ? { image_url: input.referenceUrl } : {}),
+      ...(input.referenceImages[0] ? { image_url: input.referenceImages[0] } : {}),
     };
 
     // Deliberately no retry loop: an accepted submit is a billed job, so a lost response must not

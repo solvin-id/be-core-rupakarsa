@@ -1,6 +1,7 @@
 import { AppError } from "../http/errors.js";
 import type { AiModelRow, AiProviderRow } from "../db/schema.js";
 import { joinUrl, providerAuthHeaders, resolveProviderKey } from "../services/model-sync-service.js";
+import { requestFieldsOf } from "../services/model-capabilities.js";
 import type {
   RenderAdapter,
   RenderRequest,
@@ -21,16 +22,14 @@ export const HIGGSFIELD_CONTRACT = {
   pending: new Set(["queued", "in_progress", "processing", "pending"]),
   done: new Set(["completed", "succeeded", "done"]),
   failed: new Set(["failed", "cancelled", "canceled", "nsfw", "expired"]),
-  /** Request fields a workflow accepts; anything else is rejected with a 400 per model. */
-  defaultFields: ["duration", "resolution", "aspectRatio"],
 } as const;
-
-type RequestField = "duration" | "resolution" | "aspectRatio";
 
 interface StatusPayload {
   status?: unknown;
   video?: { url?: unknown };
   image?: { url?: unknown };
+  /** SOUL answers `images: [{ url }]` instead of a single `image`. */
+  images?: Array<{ url?: unknown }>;
   detail?: unknown;
   error?: unknown;
 }
@@ -39,17 +38,9 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function requestFieldsOf(model: AiModelRow): RequestField[] {
-  const raw = (model.syncMetadata as { requestFields?: unknown }).requestFields;
-  if (!Array.isArray(raw)) return [...HIGGSFIELD_CONTRACT.defaultFields];
-  const fields = raw.filter(
-    (field): field is RequestField =>
-      field === "duration" || field === "resolution" || field === "aspectRatio",
-  );
-  return fields.length > 0 ? fields : [...HIGGSFIELD_CONTRACT.defaultFields];
-}
-
 export class HiggsfieldRenderAdapter implements RenderAdapter, VideoRenderAdapter {
+  readonly supportsImageJobs = true;
+
   private readonly provider: AiProviderRow;
   private readonly model: AiModelRow;
 
@@ -82,7 +73,19 @@ export class HiggsfieldRenderAdapter implements RenderAdapter, VideoRenderAdapte
       ...(fields.includes("aspectRatio") && input.selectedParams.aspectRatio
         ? { aspect_ratio: input.selectedParams.aspectRatio }
         : {}),
-      ...(input.referenceUrl ? { image_url: input.referenceUrl } : {}),
+      ...(fields.includes("image") && input.referenceImages[0]
+        ? { image_url: input.referenceImages[0] }
+        : {}),
+      ...(fields.includes("imageUrls") && input.referenceImages.length > 0
+        ? { image_urls: input.referenceImages.slice(0, 10) }
+        : {}),
+      ...(fields.includes("videoUrls") && input.referenceVideos.length > 0
+        ? { video_urls: input.referenceVideos.slice(0, 5) }
+        : {}),
+      ...(fields.includes("thinking") && this.model.thinkingEnabled ? { enable_thinking: true } : {}),
+      ...(fields.includes("customReference") && this.model.customReferenceId
+        ? { custom_reference_id: this.model.customReferenceId }
+        : {}),
     };
 
     const url = joinUrl(this.provider.baseUrl, HIGGSFIELD_CONTRACT.submitPath(this.endpointId()));
@@ -133,7 +136,10 @@ export class HiggsfieldRenderAdapter implements RenderAdapter, VideoRenderAdapte
     const status = readString(payload.status)?.toLowerCase() ?? "";
 
     if (HIGGSFIELD_CONTRACT.done.has(status)) {
-      const outputUrl = readString(payload.video?.url) ?? readString(payload.image?.url);
+      const outputUrl =
+        readString(payload.video?.url) ??
+        readString(payload.image?.url) ??
+        readString(payload.images?.[0]?.url);
       if (!outputUrl) throw new AppError(502, "PROVIDER_ERROR", "Provider tidak mengembalikan hasil render.");
       return { state: "done", url: outputUrl };
     }

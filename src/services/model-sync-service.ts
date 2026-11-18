@@ -12,6 +12,8 @@ import type {
 import { env } from "../env.js";
 import { AppError, notFound } from "../http/errors.js";
 import { templatesForProvider } from "./model-catalog.js";
+import { DEFAULT_REQUEST_FIELDS } from "./model-capabilities.js";
+import type { ModelRequestField } from "./model-capabilities.js";
 import { describeProviderFailure } from "./provider-failure.js";
 
 const SYNC_TIMEOUT_MS = 15_000;
@@ -268,12 +270,18 @@ export async function syncProviderModels(db: DbHandle, providerId: string): Prom
       );
 
     // Workflows differ in the fields they accept (higgsfield rejects what a model does not declare),
-    // so the template's request fields travel with the row the adapter reads.
+    // so the declared request fields travel with the row the adapter reads. A publisher that
+    // advertises image input gets the single-image field, which is what its job contract takes.
+    const requestFields: ModelRequestField[] =
+      template?.requestFields ??
+      (model.inputCapabilities.includes("IMAGE")
+        ? [...DEFAULT_REQUEST_FIELDS, "image"]
+        : [...DEFAULT_REQUEST_FIELDS]);
     const syncMetadata = {
       providerModelId: model.providerModelId,
       inputCapabilities: model.inputCapabilities,
       outputCapabilities: model.outputCapabilities,
-      ...(template?.requestFields ? { requestFields: template.requestFields } : {}),
+      requestFields,
     };
 
     await db

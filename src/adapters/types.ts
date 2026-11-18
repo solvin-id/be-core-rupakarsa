@@ -22,7 +22,10 @@ export interface RenderRequest {
   modelName: string;
   selectedParams: GenerationParams;
   simulateFailure: boolean;
-  referenceUrl?: string | null;
+  /** First-frame or reference images the workflow accepts, already ordered by relevance. */
+  referenceImages: string[];
+  /** Motion references for workflows that take video input. */
+  referenceVideos: string[];
 }
 
 export interface RenderResult {
@@ -91,8 +94,10 @@ export type VideoJobStatus =
   | { state: "done"; url: string }
   | { state: "failed"; reason: string };
 
-/** Optional capability: a provider whose video jobs are asynchronous submit/poll/download. */
+/** Optional capability: a provider whose renders are asynchronous submit/poll/download jobs. */
 export interface VideoRenderAdapter {
+  /** Higgsfield renders SOUL images through the same job contract as video. */
+  readonly supportsImageJobs: boolean;
   submitVideo(input: RenderRequest, signal: AbortSignal): Promise<{ jobId: string }>;
   pollVideo(jobId: string, signal: AbortSignal): Promise<VideoJobStatus>;
   downloadVideo(url: string, signal: AbortSignal): Promise<{ bytes: Buffer; mime: string }>;
