@@ -373,7 +373,7 @@ describe("cms", () => {
       "/api/cms/model-templates",
     );
     expect(all.status).toBe(200);
-    expect(all.body).toHaveLength(9);
+    expect(all.body).toHaveLength(13);
 
     const filtered = await client.json<Array<{ providerCode: string }>>(
       "/api/cms/model-templates?providerCode=kenari_ai",

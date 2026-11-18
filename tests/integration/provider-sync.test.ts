@@ -179,7 +179,7 @@ describe("provider model sync", () => {
     expect(first.status).toBe(200);
     // The seed already created every template row, so a sync only rewrites their provider ids.
     expect(first.body.added).toBe(0);
-    expect(first.body.updated).toBe(9);
+    expect(first.body.updated).toBe(13);
 
     const endpoint = "alibaba/wan-3.0/text-to-video";
     const wan = first.body.models
@@ -192,8 +192,8 @@ describe("provider model sync", () => {
       method: "POST",
     });
     expect(second.body.added).toBe(0);
-    expect(second.body.updated).toBe(9);
-    expect(second.body.models).toHaveLength(9);
+    expect(second.body.updated).toBe(13);
+    expect(second.body.models).toHaveLength(13);
 
     const kling = await db
       .select()

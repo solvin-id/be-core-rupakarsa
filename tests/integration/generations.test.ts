@@ -167,7 +167,7 @@ describe("generation pipeline", () => {
     expect(media.headers.get("content-type")).toBe("image/svg+xml");
     expect(media.headers.get("cache-control")).toContain("immutable");
 
-    const download = await client.request(`/media/${key}?download=1`);
+    const download = await client.request(`/media/${key}&download=1`);
     expect(download.headers.get("content-disposition")).toContain("attachment");
 
     const listed = await client.json<Array<{ id: string; status: string }>>(

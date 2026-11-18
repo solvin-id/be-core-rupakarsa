@@ -145,12 +145,9 @@ describe("higgsfield async video render", () => {
     expect(row?.outputSize).toBe(MP4_BYTES.byteLength);
 
     expect(submissions).toHaveLength(1);
-    expect(submissions[0]).toMatchObject({
-      prompt: "[BRIEF]\nOmbak senja",
-      duration: 10,
-      resolution: "720p",
-      aspect_ratio: "16:9",
-    });
+    // Direct mode composes a production blueprint; the brief stays the subject.
+    expect(String(submissions[0]?.prompt)).toContain("Ombak senja");
+    expect(submissions[0]).toMatchObject({ duration: 10, resolution: "720p", aspect_ratio: "16:9" });
     expect(statusCalls).toBeGreaterThanOrEqual(2);
   });
 

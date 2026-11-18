@@ -1,0 +1,213 @@
+import { once } from "node:events";
+
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+// The render registry reads PROVIDER_MODE when the app boots, so this file opts into live mode.
+process.env.PROVIDER_MODE = "live";
+
+const { encryptSecret } = await import("../../src/crypto/encryption.js");
+const { db } = await import("../../src/db/client.js");
+const { aiModels, aiProviders, workspaces } = await import("../../src/db/schema.js");
+const helpers = await import("./helpers.js");
+
+const MP4_BYTES = Buffer.from([0x00, 0x00, 0x00, 0x18]);
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+let server: ReturnType<typeof serve> | null = null;
+let mockBase = "";
+const submissions: Array<Record<string, unknown>> = [];
+const characterBodies: Array<Record<string, unknown>> = [];
+const polled = new Map<string, number>();
+
+beforeAll(async () => {
+  const app = new Hono();
+
+  app.post("/v1/custom-references", async (c) => {
+    characterBodies.push((await c.req.json()) as Record<string, unknown>);
+    return c.json({ id: "char-1", status: "queued" });
+  });
+  app.get("/v1/custom-references/:id", (c) =>
+    c.json({
+      id: c.req.param("id"),
+      status: "completed",
+      thumbnail_url: "https://cdn.example.test/char-1.png",
+    }),
+  );
+
+  // One path per workflow; the reference workflows carry their own fields.
+  for (const endpoint of ["alibaba/wan-3.0/text-to-video", "alibaba/wan-3.0/image-to-video"]) {
+    app.post(`/${endpoint}`, async (c) => {
+      submissions.push((await c.req.json()) as Record<string, unknown>);
+      return c.json({ status: "queued", request_id: `job-${submissions.length}` });
+    });
+  }
+
+  app.get("/requests/:id/status", (c) => {
+    const id = c.req.param("id");
+    const calls = (polled.get(id) ?? 0) + 1;
+    polled.set(id, calls);
+    if (calls === 1) return c.json({ status: "in_progress" });
+    return c.json({ status: "completed", video: { url: `${mockBase}/out.mp4` } });
+  });
+  app.get("/out.mp4", (c) => c.body(new Uint8Array(MP4_BYTES), 200, { "content-type": "video/mp4" }));
+
+  server = serve({ fetch: app.fetch, port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("mock provider did not bind");
+  mockBase = `http://127.0.0.1:${address.port}`;
+});
+
+afterAll(() => {
+  server?.close();
+});
+
+async function adminClient() {
+  const client = helpers.createClient();
+  await helpers.login(client, process.env.SEED_SUPERADMIN_EMAIL ?? "admin@rupakarsa.id");
+  return client;
+}
+
+async function pointHiggsfieldAtMock(): Promise<void> {
+  await db
+    .update(aiProviders)
+    .set({
+      baseUrl: mockBase,
+      apiKeyEncrypted: encryptSecret("keyid:keysecret"),
+      apiKeyMasked: "key••••••cret",
+      isActive: true,
+    })
+    .where(eq(aiProviders.code, "HIGGSFIELD"));
+}
+
+async function studioFixture(email: string) {
+  const account = await helpers.createAccount({ email });
+  await db.update(workspaces).set({ tokenBalance: 100 }).where(eq(workspaces.id, account.workspace.id));
+  const client = helpers.createClient();
+  await helpers.login(client, email);
+  const folder = await helpers.createFolder(client, "Tuning");
+  return { client, folderId: folder.id };
+}
+
+async function uploadPng(client: ReturnType<typeof helpers.createClient>): Promise<string> {
+  const form = new FormData();
+  form.append("file", new File([PNG_BYTES], "frame.png", { type: "image/png" }));
+  const uploaded = await client.json<{ key: string }>("/api/creator/uploads", {
+    method: "POST",
+    body: form,
+  });
+  if (uploaded.status !== 201) throw new Error(`upload failed: ${JSON.stringify(uploaded.body)}`);
+  return uploaded.body.key;
+}
+
+interface CharacterBody {
+  id: string;
+  externalId: string | null;
+  status: string;
+  thumbnailUrl: string | null;
+}
+
+describe("higgsfield tuning", () => {
+  beforeEach(async () => {
+    submissions.length = 0;
+    characterBodies.length = 0;
+    polled.clear();
+    await helpers.resetDatabase();
+    await pointHiggsfieldAtMock();
+  });
+
+  it("trains a Soul ID, lists it, and refreshes its provider state", async () => {
+    const admin = await adminClient();
+
+    const created = await admin.json<CharacterBody>(
+      "/api/cms/higgsfield/characters",
+      helpers.jsonBody({
+        name: "Mbok Srini",
+        modelVersion: "v1",
+        imageUrls: ["https://cdn.example.test/a.jpg", "https://cdn.example.test/b.jpg"],
+      }),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.externalId).toBe("char-1");
+    expect(created.body.status).toBe("QUEUED");
+
+    expect(characterBodies).toHaveLength(1);
+    expect(characterBodies[0]).toMatchObject({
+      name: "Mbok Srini",
+      model_version: "v1",
+      input_images: [
+        { type: "image_url", image_url: "https://cdn.example.test/a.jpg" },
+        { type: "image_url", image_url: "https://cdn.example.test/b.jpg" },
+      ],
+    });
+
+    const listed = await admin.json<CharacterBody[]>("/api/cms/higgsfield/characters");
+    expect(listed.status).toBe(200);
+    expect(listed.body.map((row) => row.externalId)).toContain("char-1");
+
+    const refreshed = await admin.json<CharacterBody>(
+      `/api/cms/higgsfield/characters/${created.body.id}/refresh`,
+      { method: "POST" },
+    );
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.status).toBe("COMPLETED");
+    expect(refreshed.body.thumbnailUrl).toBe("https://cdn.example.test/char-1.png");
+  });
+
+  it("sends Deep Thinking to a Wan 3.0 workflow when the model enables it", async () => {
+    const fx = await studioFixture("tuning-thinking@example.test");
+    const model = await helpers.modelByCode("wan-qwen-10s");
+    await db.update(aiModels).set({ thinkingEnabled: true }).where(eq(aiModels.id, model.id));
+
+    const created = await fx.client.json<{ generation: { id: string } }>(
+      "/api/creator/generations",
+      helpers.jsonBody({
+        folderId: fx.folderId,
+        modelId: model.id,
+        rawPrompt: "Lampu minyak",
+        planMode: true,
+        finalPrompt: "Slow cinematic lantern light",
+        attachmentKeys: [],
+        selectedParams: { durationSec: 10, resolution: "720p", aspectRatio: "16:9" },
+      }),
+    );
+    expect(created.status).toBe(201);
+    await helpers.pollGeneration(fx.client, created.body.generation.id, ["COMPLETED", "FAILED"]);
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]).toMatchObject({ enable_thinking: true, duration: 10 });
+  });
+
+  it("sends the reference image to an image-to-video workflow", async () => {
+    const fx = await studioFixture("tuning-i2v@example.test");
+    const model = await helpers.modelByCode("wan-3.0-i2v");
+    const attachmentKey = await uploadPng(fx.client);
+
+    const created = await fx.client.json<{ generation: { id: string } }>(
+      "/api/creator/generations",
+      helpers.jsonBody({
+        folderId: fx.folderId,
+        modelId: model.id,
+        rawPrompt: "Dia menoleh ke kamera",
+        planMode: true,
+        finalPrompt: "She turns toward camera, lantern still in hand",
+        attachmentKeys: [attachmentKey],
+        selectedParams: { durationSec: 5, resolution: "720p", aspectRatio: "16:9" },
+        continueFromPrevious: false,
+      }),
+    );
+    expect(created.status).toBe(201);
+    await helpers.pollGeneration(fx.client, created.body.generation.id, ["COMPLETED", "FAILED"]);
+
+    expect(submissions).toHaveLength(1);
+    const imageUrl = submissions[0]?.image_url;
+    expect(typeof imageUrl).toBe("string");
+    expect(String(imageUrl)).toContain("/media/");
+  });
+});

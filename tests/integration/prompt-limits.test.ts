@@ -263,4 +263,72 @@ describe("prompt limits and compression", () => {
     expect(row?.finalPrompt.endsWith("kata")).toBe(true);
     expect(captured).toHaveLength(0);
   });
+
+  it("treats a zero per-model limit as unset instead of compressing to nothing", async () => {
+    await writeSetting(db, SETTING_KEYS.ai, {
+      planModelId: null,
+      analysisModelId: null,
+      videoAnalysisModelId: null,
+      defaultVideoModelId: null,
+    });
+
+    const fx = await fixture("limits-zero@example.test");
+    // The CMS rejects 0, but rows written before that rule still carry it.
+    await db.update(aiModels).set({ maxPromptChars: 0 }).where(eq(aiModels.id, fx.renderModel.id));
+
+    const response = await fx.client.json<{ generation: { id: string } }>(
+      "/api/creator/generations",
+      generationBody({
+        folderId: fx.folderId,
+        modelId: fx.renderModel.id,
+        rawPrompt: "Brief pendek",
+        finalPrompt: "[SUBJECT] rempah di kain linen",
+        planMode: true,
+      }),
+    );
+    expect(response.status).toBe(201);
+
+    const [row] = await db
+      .select()
+      .from(generations)
+      .where(eq(generations.id, response.body.generation.id))
+      .limit(1);
+    expect(row?.promptLimitChars).toBe(4000);
+    expect(row?.finalPrompt.length).toBeGreaterThan(0);
+    expect(row?.promptCompressed).toBe(false);
+  });
+
+  it("enforces a small per-model limit on a planned prompt", async () => {
+    await writeSetting(db, SETTING_KEYS.ai, {
+      planModelId: null,
+      analysisModelId: null,
+      videoAnalysisModelId: null,
+      defaultVideoModelId: null,
+    });
+
+    const fx = await fixture("limits-small@example.test");
+    await db.update(aiModels).set({ maxPromptChars: 50 }).where(eq(aiModels.id, fx.renderModel.id));
+
+    const response = await fx.client.json<{ generation: { id: string } }>(
+      "/api/creator/generations",
+      generationBody({
+        folderId: fx.folderId,
+        modelId: fx.renderModel.id,
+        rawPrompt: "Brief pendek",
+        finalPrompt: "rempah ".repeat(30).trim(),
+        planMode: true,
+      }),
+    );
+    expect(response.status).toBe(201);
+
+    const [row] = await db
+      .select()
+      .from(generations)
+      .where(eq(generations.id, response.body.generation.id))
+      .limit(1);
+    expect(row?.promptLimitChars).toBe(50);
+    expect(row?.promptCompressed).toBe(true);
+    expect((row?.finalPrompt.length ?? 999)).toBeLessThanOrEqual(50);
+    expect(row?.finalPrompt.length).toBeGreaterThan(0);
+  });
 });

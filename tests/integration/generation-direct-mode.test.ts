@@ -168,7 +168,7 @@ describe("direct mode without a plan model call", () => {
     await resetDatabase();
   });
 
-  it("renders from brief, attachment notes and pre-context without spending plan quota", async () => {
+  it("composes a structured prompt from the brief, the attachments and the pre-context", async () => {
     const fx = await fixture("direct-mode@example.test", false);
     const attachmentKey = await uploadPng(fx.client);
 
@@ -181,9 +181,10 @@ describe("direct mode without a plan model call", () => {
       .where(eq(generations.id, response.body.generation.id))
       .limit(1);
 
-    expect(row?.finalPrompt).toContain("[BRIEF]\nClose-up rempah di kain linen");
+    // The deterministic blueprint carries the brief as the subject, not as a raw appended block.
+    expect(row?.finalPrompt).toContain("[SUBJECT] Close-up rempah di kain linen");
     expect(row?.finalPrompt).toContain("[ATTACHMENT NOTES]\n#1 ");
-    expect(row?.finalPrompt).toContain("[PRE-CONTEXT]");
+    expect(row?.finalPrompt).toContain("[STYLE ANCHORS]");
     expect(row?.finalPrompt).toContain("Aroma rempah");
     expect(row?.finalPrompt).not.toContain("[MODE]");
     expect(row?.finalPrompt).toContain("MOCK SUBJECT");
@@ -204,7 +205,7 @@ describe("direct mode without a plan model call", () => {
     expect(usage).toHaveLength(0);
   });
 
-  it("keeps the same final prompt when a plan model is configured but plan mode is off", async () => {
+  it("uses the plan model immediately when it is configured and plan mode is off", async () => {
     const fx = await fixture("direct-mode-with-plan@example.test", true);
     const attachmentKey = await uploadPng(fx.client);
 
@@ -217,9 +218,11 @@ describe("direct mode without a plan model call", () => {
       .where(eq(generations.id, response.body.generation.id))
       .limit(1);
 
-    expect(row?.finalPrompt.startsWith("[BRIEF]\nGerobak sate di senja")).toBe(true);
-    expect(row?.finalPrompt).not.toContain("MOCK PROMPT for vision");
+    // Direct mode runs the same plan model as plan mode, minus the review step and plan quota.
+    expect(row?.finalPrompt).toBe("MOCK PROMPT for vision");
     expect(row?.promptCompressed).toBe(false);
+    const usage = await db.select().from(planUsages).where(eq(planUsages.workspaceId, fx.workspaceId));
+    expect(usage).toHaveLength(0);
   });
 
   it("rejects an attachment when no analysis model is configured", async () => {

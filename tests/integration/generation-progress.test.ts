@@ -11,6 +11,7 @@ process.env.PROVIDER_MODE = "live";
 
 const { db } = await import("../../src/db/client.js");
 const { generations } = await import("../../src/db/schema.js");
+const { clearProgressCache } = await import("../../src/services/progress-service.js");
 const helpers = await import("./helpers.js");
 
 const MP4_BYTES = Buffer.from([0x00, 0x00, 0x00, 0x18]);
@@ -132,6 +133,7 @@ async function pollUntil(
 describe("render progress state", () => {
   beforeEach(async () => {
     statusCalls = 0;
+    clearProgressCache();
     await helpers.resetDatabase();
   });
 
@@ -166,5 +168,100 @@ describe("render progress state", () => {
 
     const drained = await fx.client.json<unknown[]>("/api/creator/generations?active=true");
     expect(drained.body).toEqual([]);
+  });
+});
+
+/** Two finished renders of the same model, one hundred seconds each. */
+async function seedTwelveOClockHistory(
+  workspaceId: string,
+  folderId: string,
+  modelId: string,
+): Promise<void> {
+  const completedAt = new Date();
+  const startedAt = new Date(completedAt.getTime() - 100_000);
+  for (let index = 0; index < 2; index += 1) {
+    await db.insert(generations).values({
+      workspaceId,
+      folderId,
+      modelId,
+      modelName: "Progress Model",
+      mediaType: "VIDEO",
+      rawPrompt: "Riwayat",
+      plannedPrompt: "History render",
+      finalPrompt: "History render",
+      selectedParams: { durationSec: 5, resolution: "720p", aspectRatio: "16:9" },
+      status: "COMPLETED",
+      sequence: index + 1,
+      startedAt,
+      completedAt,
+    });
+  }
+}
+
+describe("estimated render percentage", () => {
+  beforeEach(async () => {
+    clearProgressCache();
+    await helpers.resetDatabase();
+  });
+
+  it("derives the percentage from the model's own history and clamps at 95", async () => {
+    const fx = await fixture("progress-estimate@example.test");
+    // The fixture's workspace owns the folder; resolve it through the session.
+    const session = await fx.client.json<{ workspace: { id: string } }>("/api/creator/session");
+    await seedTwelveOClockHistory(session.body.workspace.id, fx.folderId, fx.modelId);
+    clearProgressCache();
+
+    const running = new Date(Date.now() - 50_000);
+    const [row] = await db
+      .insert(generations)
+      .values({
+        workspaceId: session.body.workspace.id,
+        folderId: fx.folderId,
+        modelId: fx.modelId,
+        modelName: "Progress Model",
+        mediaType: "VIDEO",
+        rawPrompt: "Sedang render",
+        plannedPrompt: "Rendering",
+        finalPrompt: "Rendering",
+        selectedParams: { durationSec: 5, resolution: "720p", aspectRatio: "16:9" },
+        status: "RENDERING",
+        sequence: 3,
+        startedAt: running,
+        createdAt: running,
+      })
+      .returning();
+    if (!row) throw new Error("failed to seed the running generation");
+
+    const halfway = await fx.client.json<{ estimateMs: number | null; progressPercent: number | null }>(
+      `/api/creator/generations/${row.id}`,
+    );
+    expect(halfway.body.estimateMs).toBeGreaterThanOrEqual(90_000);
+    expect(halfway.body.estimateMs).toBeLessThanOrEqual(110_000);
+    expect(halfway.body.progressPercent).toBeGreaterThanOrEqual(45);
+    expect(halfway.body.progressPercent).toBeLessThanOrEqual(55);
+
+    await db
+      .update(generations)
+      .set({ startedAt: new Date(Date.now() - 10 * 60_000) })
+      .where(eq(generations.id, row.id));
+    const overdue = await fx.client.json<{ progressPercent: number | null }>(
+      `/api/creator/generations/${row.id}`,
+    );
+    expect(overdue.body.progressPercent).toBe(95);
+
+    await db
+      .update(generations)
+      .set({ status: "COMPLETED", completedAt: new Date() })
+      .where(eq(generations.id, row.id));
+    const done = await fx.client.json<{ progressPercent: number | null }>(
+      `/api/creator/generations/${row.id}`,
+    );
+    expect(done.body.progressPercent).toBe(100);
+
+    await db.update(generations).set({ status: "FAILED" }).where(eq(generations.id, row.id));
+    const failed = await fx.client.json<{ progressPercent: number | null }>(
+      `/api/creator/generations/${row.id}`,
+    );
+    expect(failed.body.progressPercent).toBeNull();
   });
 });
