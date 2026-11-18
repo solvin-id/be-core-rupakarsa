@@ -1,4 +1,5 @@
 import { getPlanModelAdapter } from "../providers/registry.js";
+import { logAiActivity } from "./ai-activity-log.js";
 import { stripFences } from "./plan-service.js";
 
 export const PROMPT_COMPRESS_SYSTEM =
@@ -23,12 +24,37 @@ export function truncateToLimit(text: string, limit: number): string {
 export async function compressPrompt(input: {
   prompt: string;
   limit: number;
+  workspaceId?: string | null;
 }): Promise<{ prompt: string; compressed: boolean }> {
   const prompt = input.prompt.trim();
   if (prompt.length <= input.limit) return { prompt, compressed: false };
 
+  const startedAt = Date.now();
+  const log = (result: { prompt: string; compressed: boolean }, fallback: boolean, error?: unknown) =>
+    logAiActivity({
+      kind: "COMPRESS",
+      status: error ? "ERROR" : "SUCCESS",
+      workspaceId: input.workspaceId ?? null,
+      latencyMs: Date.now() - startedAt,
+      promptChars: prompt.length,
+      responseChars: result.prompt.length,
+      requestText: prompt,
+      responseText: result.prompt,
+      errorMessage: error instanceof Error ? error.message : null,
+      metadata: {
+        limit: input.limit,
+        before: prompt.length,
+        after: result.prompt.length,
+        fallback,
+      },
+    });
+
   const { adapter, model } = await getPlanModelAdapter();
-  if (!adapter || !model) return { prompt: truncateToLimit(prompt, input.limit), compressed: true };
+  if (!adapter || !model) {
+    const truncated = { prompt: truncateToLimit(prompt, input.limit), compressed: true };
+    await log(truncated, true);
+    return truncated;
+  }
 
   const source = prompt.slice(0, input.limit * MAX_INPUT_RATIO);
   try {
@@ -42,10 +68,19 @@ export async function compressPrompt(input: {
     });
     const candidate = stripFences(result.text).trim();
     if (candidate.length === 0 || candidate.length > input.limit) {
-      return { prompt: truncateToLimit(candidate.length > 0 ? candidate : prompt, input.limit), compressed: true };
+      const clamped = {
+        prompt: truncateToLimit(candidate.length > 0 ? candidate : prompt, input.limit),
+        compressed: true,
+      };
+      await log(clamped, true);
+      return clamped;
     }
-    return { prompt: candidate, compressed: true };
-  } catch {
-    return { prompt: truncateToLimit(prompt, input.limit), compressed: true };
+    const fitted = { prompt: candidate, compressed: true };
+    await log(fitted, false);
+    return fitted;
+  } catch (error) {
+    const truncated = { prompt: truncateToLimit(prompt, input.limit), compressed: true };
+    await log(truncated, true, error);
+    return truncated;
   }
 }

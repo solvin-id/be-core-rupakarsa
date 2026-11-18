@@ -6,6 +6,8 @@ import { assetAnalyses, generations, mediaAssets } from "../db/schema.js";
 import type { MediaAssetRow } from "../db/schema.js";
 import { notFound, validation } from "../http/errors.js";
 import { getAnalysisAdapter } from "../providers/registry.js";
+import { AppError } from "../http/errors.js";
+import { logAiActivity } from "./ai-activity-log.js";
 import { resolveStorage } from "./storage-service.js";
 
 export type AnalysisSourceKind = "UPLOAD" | "GENERATION";
@@ -139,19 +141,53 @@ export async function analyzeAsset(
       ? { type: "video_url", video_url: { url: dataUrl } }
       : { type: "image_url", image_url: { url: dataUrl } };
 
-  const result = await adapter.chat({
-    model: model.providerModelId || model.code,
-    messages: [
-      { role: "system", content: ANALYSIS_PROMPT },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: `File: ${asset.key.split("/").pop() ?? asset.key} (${loaded.mime}).` },
-          part,
-        ],
-      },
-    ],
-    json: true,
+  const analysisStartedAt = Date.now();
+  // The request text is logged, the base64 payload never is: a data URL would blow the row budget.
+  const logRequestText = `File: ${asset.key} (${loaded.mime}, ${loaded.bytes.byteLength} bytes).`;
+  let result: Awaited<ReturnType<typeof adapter.chat>>;
+  try {
+    result = await adapter.chat({
+      model: model.providerModelId || model.code,
+      messages: [
+        { role: "system", content: ANALYSIS_PROMPT },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: `File: ${asset.key.split("/").pop() ?? asset.key} (${loaded.mime}).` },
+            part,
+          ],
+        },
+      ],
+      json: true,
+    });
+  } catch (error) {
+    await logAiActivity({
+      kind: "ANALYSIS",
+      status: "ERROR",
+      workspaceId,
+      modelId: model.id,
+      modelName: model.displayName,
+      latencyMs: Date.now() - analysisStartedAt,
+      requestText: logRequestText,
+      errorCode: error instanceof AppError ? error.code : "ANALYSIS_FAILED",
+      errorMessage: error instanceof Error ? error.message : "Analisis lampiran gagal.",
+      metadata: { sourceKind, sourceId, kind },
+    });
+    throw error;
+  }
+
+  await logAiActivity({
+    kind: "ANALYSIS",
+    status: "SUCCESS",
+    workspaceId,
+    modelId: model.id,
+    modelName: model.displayName,
+    latencyMs: Date.now() - analysisStartedAt,
+    tokensUsed: result.usage.totalTokens,
+    responseChars: result.text.length,
+    requestText: logRequestText,
+    responseText: result.text,
+    metadata: { sourceKind, sourceId, kind },
   });
 
   const structured = parseStructured(result.text);

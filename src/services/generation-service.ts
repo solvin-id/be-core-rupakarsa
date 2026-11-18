@@ -25,10 +25,13 @@ import type { WorkspaceDto } from "../http/schemas.js";
 import { getPlanModelAdapter } from "../providers/registry.js";
 import { enqueueRender } from "../queue/index.js";
 import { analyzeAsset } from "./analysis-service.js";
+import { modelSupportsImageReference } from "./model-capabilities.js";
 import type { PlanAttachment } from "./plan-service.js";
 import { assertAttachmentsSupported, buildDirectPrompt, runPlanModel } from "./plan-service.js";
-import { loadContextText } from "./pre-context-service.js";
+import { loadContinuity } from "./continuity-service.js";
+import { resolveOutputMime } from "./media-mime.js";
 import { compressPrompt } from "./prompt-compressor.js";
+import { promptLimitFor } from "./prompt-limit.js";
 import { assertDailyGenerationQuota } from "./quota-service.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
@@ -50,6 +53,8 @@ export interface PlanGenerationInput {
   aspectRatio: string;
   attachmentKeys: string[];
   contextIds?: string[];
+  /** Include the folder's previous completed scene in the plan prompt. */
+  continueFromPrevious: boolean;
 }
 
 export interface PlanGenerationResult {
@@ -73,6 +78,8 @@ export interface CreateGenerationInput {
   contextIds: string[];
   selectedParams: GenerationParams;
   simulateFailure: boolean;
+  /** Auto-attach the previous scene and inject its notes; false starts a fresh scene. */
+  continueFromPrevious: boolean;
 }
 
 export interface CreateGenerationResult {
@@ -156,6 +163,12 @@ async function loadAttachments(
   return resolved;
 }
 
+async function loadAssetByKey(key: string): Promise<MediaAssetRow | null> {
+  const [asset] = await db.select().from(mediaAssets).where(eq(mediaAssets.key, key)).limit(1);
+  if (!asset || asset.purgedAt) return null;
+  return asset;
+}
+
 async function workspaceSnapshot(workspaceId: string): Promise<WorkspaceRow> {
   const [row] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
   if (!row) throw notFound("Workspace tidak ditemukan.");
@@ -179,6 +192,62 @@ function planAttachmentsOf(resolved: ResolvedAttachment[]): PlanAttachment[] {
 }
 
 /**
+ * Direct mode now runs the same plan model plan mode uses (without the review step, without
+ * consuming plan quota). If the configured model fails, the deterministic blueprint keeps the
+ * render alive instead of failing the request.
+ */
+async function composeDirectPrompt(input: {
+  workspaceId: string;
+  userId: string;
+  folderId: string;
+  model: RenderableModelRow;
+  rawPrompt: string;
+  selectedParams: GenerationParams;
+  attachments: PlanAttachment[];
+  attachmentTexts: string[];
+  continuityText: string;
+  hasReference: boolean;
+  promptLimit: number;
+}): Promise<string> {
+  try {
+    const plan = await runPlanModel({
+      workspaceId: input.workspaceId,
+      folderId: input.folderId,
+      renderModel: input.model,
+      rawPrompt: input.rawPrompt,
+      attachmentTexts: input.attachmentTexts,
+      attachments: input.attachments,
+      contextText: input.continuityText,
+      selectedParams: input.selectedParams,
+      hasReference: input.hasReference,
+      promptLimit: input.promptLimit,
+      mode: "direct",
+      userId: input.userId,
+    });
+    // `usedModelId` is empty only for the deterministic blueprint fallback, which omits the
+    // attachment notes and the style lock that this composer adds itself.
+    const prompt = plan.prompt.trim();
+    if (plan.usedModelId.length > 0 && prompt.length > 0) return prompt;
+  } catch (error) {
+    logger.warn(
+      { err: error, folderId: input.folderId },
+      "direct-mode plan model failed; using the deterministic blueprint",
+    );
+  }
+
+  return buildDirectPrompt({
+    rawPrompt: input.rawPrompt,
+    model: input.model,
+    durationSec: input.selectedParams.durationSec,
+    resolution: input.selectedParams.resolution,
+    aspectRatio: input.selectedParams.aspectRatio,
+    hasReference: input.hasReference,
+    attachmentTexts: input.attachmentTexts,
+    continuityText: input.continuityText,
+  });
+}
+
+/**
  * Marks the render as started without resetting a start time a provider retry already recorded, so
  * the studio's elapsed timer stays truthful across queue retries.
  */
@@ -189,12 +258,15 @@ export async function markGenerationStarted(generationId: string): Promise<void>
     .where(eq(generations.id, generationId));
 }
 
-/** Persists a provider-reported status only when it differs, so polling does not rewrite rows. */
+/**
+ * Persists a provider-reported status only when it differs, so polling does not rewrite rows.
+ * Returns whether a row actually changed, which is what the worker logs.
+ */
 export async function markProviderStatus(
   generationId: string,
   providerStatus: string,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const updated = await db
     .update(generations)
     .set({ providerStatus })
     .where(
@@ -202,7 +274,9 @@ export async function markProviderStatus(
         eq(generations.id, generationId),
         sql`${generations.providerStatus} is distinct from ${providerStatus}`,
       ),
-    );
+    )
+    .returning({ id: generations.id });
+  return updated.length > 0;
 }
 
 export async function planGeneration(input: PlanGenerationInput): Promise<PlanGenerationResult> {
@@ -229,7 +303,12 @@ export async function planGeneration(input: PlanGenerationInput): Promise<PlanGe
         })),
       )
     : [];
-  const contextText = await loadContextText(db, folder.id, input.contextIds);
+  const continuity = await loadContinuity(db, {
+    folderId: folder.id,
+    contextIds: input.contextIds ?? [],
+    includePrevious: input.continueFromPrevious,
+  });
+  const promptLimit = promptLimitFor(model, limits);
 
   const plan = await runPlanModel({
     workspaceId: input.workspaceId,
@@ -238,13 +317,16 @@ export async function planGeneration(input: PlanGenerationInput): Promise<PlanGe
     rawPrompt: input.rawPrompt,
     attachmentTexts: analyses.map((entry) => entry.analysis.text),
     attachments: planAttachmentsOf(resolved),
-    contextText,
+    contextText: continuity.text,
     selectedParams: {
       durationSec: input.durationSec,
       resolution: input.resolution,
       aspectRatio: input.aspectRatio,
     },
     hasReference: resolved.length > 0,
+    promptLimit,
+    mode: "plan",
+    userId: input.userId,
   });
 
   const pricing = await getPricing(db);
@@ -273,9 +355,9 @@ export async function planGeneration(input: PlanGenerationInput): Promise<PlanGe
     workspace: toWorkspace(outcome.workspace),
     analysis: {
       attachments: analyses.map((entry) => ({ key: entry.key, text: entry.analysis.text })),
-      preContext: contextText,
+      preContext: continuity.text,
     },
-    limit: { promptChars: model.maxPromptChars ?? limits.finalPromptMaxChars },
+    limit: { promptChars: promptLimit },
   };
 }
 
@@ -292,7 +374,7 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
 
   const resolved = await loadAttachments(input.workspaceId, input.userId, input.attachmentKeys);
   // Plan mode only needs attachment analyses when a plan model can read them; direct mode always
-  // needs them because they are what the server renders from.
+  // needs them because they are what the server composes from.
   const analyzed =
     resolved.length > 0 &&
     (input.planMode ? await planModelForAttachments(planAttachmentsOf(resolved)) : true);
@@ -305,32 +387,72 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
         })),
       )
     : [];
-  const contextText = await loadContextText(db, folder.id, input.contextIds);
+
+  const continuity = await loadContinuity(db, {
+    folderId: folder.id,
+    contextIds: input.contextIds,
+    includePrevious: input.continueFromPrevious,
+  });
+  const promptLimit = promptLimitFor(model, limits);
+  const attachmentTexts = analyses.map((entry) => entry.text);
 
   let finalPrompt: string;
   if (input.planMode) {
     finalPrompt = input.finalPrompt?.trim() ?? "";
     if (finalPrompt.length === 0) throw validation("Buat plan terlebih dahulu.");
   } else {
-    finalPrompt = buildDirectPrompt({
-      rawPrompt: input.rawPrompt,
-      attachmentTexts: analyses.map((entry) => entry.text),
-      contextText,
-    }).trim();
+    finalPrompt = (
+      await composeDirectPrompt({
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        folderId: folder.id,
+        model,
+        rawPrompt: input.rawPrompt,
+        selectedParams: input.selectedParams,
+        attachments: planAttachmentsOf(resolved),
+        attachmentTexts,
+        continuityText: continuity.text,
+        hasReference: resolved.length > 0,
+        promptLimit,
+      })
+    ).trim();
   }
 
-  const promptLimit = model.maxPromptChars ?? limits.finalPromptMaxChars;
-  const limited = await compressPrompt({ prompt: finalPrompt, limit: promptLimit });
+  const limited = await compressPrompt({
+    prompt: finalPrompt,
+    limit: promptLimit,
+    workspaceId: input.workspaceId,
+  });
   finalPrompt = limited.prompt;
   if (finalPrompt.length === 0) throw validation("Prompt final tidak boleh kosong.");
 
   const firstAttachment = resolved[0] ?? null;
+  // Continuity only ever adds a reference the workflow declares it accepts, and never overrides a
+  // media file the user attached.
+  const continuityAsset =
+    !firstAttachment &&
+    input.continueFromPrevious &&
+    continuity.previous?.outputKey &&
+    modelSupportsImageReference(model)
+      ? await loadAssetByKey(continuity.previous.outputKey)
+      : null;
+  const referenceKey = firstAttachment?.asset.key ?? continuityAsset?.key ?? null;
+
   const analysisSnapshot = analyses
     .map((entry) => `# ${entry.asset.key}\n${entry.text}`)
     .join("\n\n");
 
   const created = await db.transaction(async (tx) => {
     const generationId = crypto.randomUUID();
+
+    // One scene number per folder: the advisory lock serializes concurrent creates and the unique
+    // (folder_id, sequence) index turns any leak into a hard error instead of a silent duplicate.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${folder.id})::bigint)`);
+    const [sequenceRow] = await tx
+      .select({ maxSequence: sql<number>`coalesce(max(${generations.sequence}), 0)` })
+      .from(generations)
+      .where(eq(generations.folderId, folder.id));
+    const sequence = Number(sequenceRow?.maxSequence ?? 0) + 1;
 
     const [generation] = await tx
       .insert(generations)
@@ -347,13 +469,15 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
         planMode: input.planMode,
         finalPrompt,
         analysisSnapshot,
-        preContextSnapshot: contextText,
-        referenceImageUrl: firstAttachment ? firstAttachment.asset.key : null,
+        preContextSnapshot: continuity.text,
+        referenceImageUrl: referenceKey,
         selectedParams: input.selectedParams,
         tokensCharged: model.tokenCost,
         status: "QUEUED",
         externalJobId: null,
-        outputUrl: null,
+        outputKey: null,
+        sequence,
+        continuitySourceId: continuityAsset ? continuity.previous?.id ?? null : null,
         errorMessage: null,
         refunded: false,
         promptCompressed: limited.compressed,
@@ -372,6 +496,16 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
           analysisText: entry.text,
         })),
       );
+    }
+
+    if (continuityAsset) {
+      await tx.insert(generationAttachments).values({
+        generationId,
+        role: "CONTINUITY" as const,
+        mediaAssetId: continuityAsset.id,
+        sourceGenerationId: continuity.previous?.id ?? null,
+        analysisText: continuity.previous?.analysisSnapshot.slice(0, 2000) ?? "",
+      });
     }
 
     await holdTokens(tx, {
@@ -424,6 +558,8 @@ const MIME_EXTENSIONS: Record<string, string> = {
   "image/svg+xml": "svg",
   "image/png": "png",
   "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/avif": "avif",
   "image/webp": "webp",
   "video/mp4": "mp4",
   "video/quicktime": "mov",
@@ -434,7 +570,7 @@ export function extensionForMime(mime: string): string {
   return MIME_EXTENSIONS[mime] ?? "bin";
 }
 
-/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — immutable, session-scoped. */
+/** Key layout: `workspaces/<id>/generations/<generationId>.<ext>` — immutable, capability-scoped. */
 export function generationOutputKey(workspaceId: string, generationId: string, mime: string): string {
   return `workspaces/${workspaceId}/generations/${generationId}.${extensionForMime(mime)}`;
 }
@@ -476,8 +612,11 @@ export async function finalizeGeneration(
     .limit(1);
   if (!generation || generation.status === "COMPLETED" || generation.status === "FAILED") return;
 
-  const key = generationOutputKey(generation.workspaceId, generation.id, outcome.mime);
-  const { url } = await putAsset(generation.workspaceId, key, outcome.bytes, outcome.mime, {
+  // The provider's own content type is not reliable (`application/octet-stream` is common), and the
+  // key extension drives both `<video>` playback and the media route's Content-Type.
+  const mime = await resolveOutputMime(outcome.bytes, outcome.mime, generation.mediaType);
+  const key = generationOutputKey(generation.workspaceId, generation.id, mime);
+  await putAsset(generation.workspaceId, key, outcome.bytes, mime, {
     uploadedBy: generation.userId,
     durationMs: outcome.durationSec ? Math.round(outcome.durationSec * 1000) : null,
     width: outcome.width ?? null,
@@ -497,8 +636,8 @@ export async function finalizeGeneration(
       .update(generations)
       .set({
         status: "COMPLETED",
-        outputUrl: url,
-        outputMime: outcome.mime,
+        outputKey: key,
+        outputMime: mime,
         outputSize: outcome.bytes.byteLength,
         externalJobId: outcome.externalJobId,
         errorMessage: null,
