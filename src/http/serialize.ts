@@ -8,6 +8,8 @@ import type {
   WorkspaceMembershipRow,
   WorkspaceRow,
 } from "../db/schema.js";
+import type { RenderProgress } from "../services/progress-service.js";
+import { outputUrlFor } from "../services/storage-service.js";
 import type {
   ActiveGenerationDto,
   AiModelDto,
@@ -107,7 +109,12 @@ export function toFolder(row: FolderRow): FolderDto {
   };
 }
 
-export function toGeneration(row: GenerationRow, outputPurgedAt: Date | null = null): GenerationDto {
+/** URLs are derived here, never read from a column: old hostnames cannot strand a render. */
+export function toGeneration(
+  row: GenerationRow,
+  outputPurgedAt: Date | null = null,
+  progress: RenderProgress = { estimateMs: null, progressPercent: 0 },
+): GenerationDto {
   return {
     id: row.id,
     workspaceId: row.workspaceId,
@@ -123,11 +130,12 @@ export function toGeneration(row: GenerationRow, outputPurgedAt: Date | null = n
     analysisSnapshot: row.analysisSnapshot,
     preContextSnapshot: row.preContextSnapshot,
     referenceImageUrl: row.referenceImageUrl,
+    sequence: row.sequence,
     selectedParams: row.selectedParams,
     tokensCharged: row.tokensCharged,
     status: row.status,
     externalJobId: row.externalJobId,
-    outputUrl: row.outputUrl,
+    outputUrl: outputUrlFor(row),
     outputMime: row.outputMime,
     outputSize: row.outputSize,
     outputPurgedAt: outputPurgedAt ? outputPurgedAt.toISOString() : null,
@@ -137,13 +145,19 @@ export function toGeneration(row: GenerationRow, outputPurgedAt: Date | null = n
     providerStatus: row.providerStatus,
     promptCompressed: row.promptCompressed,
     promptLimitChars: row.promptLimitChars,
+    estimateMs: progress.estimateMs,
+    progressPercent: progress.progressPercent,
     createdAt: row.createdAt.toISOString(),
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
   };
 }
 
 /** Notification-bell projection: the generation plus the folder name the studio links back to. */
-export function toActiveGeneration(row: GenerationRow, folderName: string): ActiveGenerationDto {
+export function toActiveGeneration(
+  row: GenerationRow,
+  folderName: string,
+  progress: RenderProgress,
+): ActiveGenerationDto {
   return {
     id: row.id,
     folderId: row.folderId,
@@ -157,6 +171,8 @@ export function toActiveGeneration(row: GenerationRow, folderName: string): Acti
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
     tokensCharged: row.tokensCharged,
     errorMessage: row.errorMessage,
+    estimateMs: progress.estimateMs,
+    progressPercent: progress.progressPercent,
   };
 }
 
@@ -192,6 +208,8 @@ export function toModel(row: AiModelRow, isDefault = false): AiModelDto {
     allowedParams: row.allowedParams,
     tokenCost: row.tokenCost,
     maxPromptChars: row.maxPromptChars,
+    thinkingEnabled: row.thinkingEnabled,
+    customReferenceId: row.customReferenceId,
     isActive: row.isActive,
     isDefault,
   };

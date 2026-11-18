@@ -17,6 +17,23 @@ import type {
 import { env } from "../env.js";
 import { assertSafeKey, mimeFor } from "./local-driver.js";
 
+/**
+ * A ranged GET reports the requested slice in `Content-Length`, so using it as the object size
+ * makes `Content-Range` claim the wrong length on every seek. The `/total` suffix of
+ * `Content-Range` is authoritative; `Content-Length` is only the whole-object fallback a
+ * non-ranged response needs.
+ */
+export function totalSizeFrom(
+  contentRange: string | undefined,
+  contentLength: number | undefined,
+  fallback: number,
+): number {
+  const total = Number(contentRange?.split("/")[1]);
+  if (Number.isFinite(total) && total > 0) return total;
+  if (typeof contentLength === "number" && Number.isFinite(contentLength)) return contentLength;
+  return fallback;
+}
+
 export interface S3Config {
   endpoint: string;
   region: string;
@@ -118,15 +135,10 @@ export class S3StorageDriver implements StorageDriver {
       );
       const bytes = result.Body ? Buffer.from(await result.Body.transformToByteArray()) : null;
       if (!bytes) return null;
-      // A ranged GET always carries the full object length; fall back to the slice when absent.
-      const size =
-        typeof result.ContentLength === "number"
-          ? result.ContentLength
-          : Number(result.ContentRange?.split("/")[1] ?? bytes.byteLength);
       return {
         bytes,
         mime: result.ContentType ?? mimeFor(key),
-        size: Number.isFinite(size) ? size : bytes.byteLength,
+        size: totalSizeFrom(result.ContentRange, result.ContentLength, bytes.byteLength),
       };
     } catch {
       return null;

@@ -10,7 +10,7 @@ import { notFound } from "../http/errors.js";
 import { defaultHook } from "../http/route-helpers.js";
 import type { AppBindings } from "../http/types.js";
 import {
-  isPrivateKey,
+  isSignedKey,
   resolveStorage,
   verifyMediaSignature,
 } from "../services/storage-service.js";
@@ -45,9 +45,9 @@ function parseRange(header: string | undefined): ParsedRange | null {
 }
 
 /**
- * Rendered media is immutable but never public: `generations/` keys require a session whose active
- * workspace owns the asset, and `uploads/` keys keep their signed `exp` + `sig` pair. Both support
- * `Range` so a `<video>` streams and seeks instead of downloading the whole file.
+ * Rendered media is immutable but never public: `uploads/` and `generations/` keys carry a signed
+ * `exp` + `sig` pair, which is the capability in place of a session — a `<video>` element and a
+ * provider fetch cannot send cookies. Both support `Range` so playback streams and seeks.
  */
 mediaRoutes.get("/media/*", async (c) => {
   const key = c.req.path.replace(/^\/media\//, "");
@@ -55,8 +55,8 @@ mediaRoutes.get("/media/*", async (c) => {
     throw notFound("Media tidak ditemukan.");
   }
 
-  const privateKey = isPrivateKey(key);
-  if (privateKey) {
+  const signedKey = isSignedKey(key);
+  if (signedKey) {
     const exp = Number(c.req.query("exp") ?? "0");
     const sig = c.req.query("sig") ?? "";
     if (sig.length === 0 || !verifyMediaSignature(key, exp, sig)) {
@@ -68,7 +68,7 @@ mediaRoutes.get("/media/*", async (c) => {
   if (!asset) throw notFound("Media tidak ditemukan.");
   if (asset.purgedAt) throw notFound("Media tidak ditemukan.");
 
-  if (!privateKey) {
+  if (!signedKey) {
     const session = await readSession(c);
     if (!session || !asset.workspaceId || asset.workspaceId !== session.activeWorkspaceId) {
       throw notFound("Media tidak ditemukan.");

@@ -5,7 +5,7 @@ import { and, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { StorageDriver } from "../adapters/types.js";
 import { db } from "../db/client.js";
 import { mediaAssets, workspaceStorage } from "../db/schema.js";
-import type { MediaAssetRow } from "../db/schema.js";
+import type { GenerationRow, MediaAssetRow } from "../db/schema.js";
 import { decryptSecret } from "../crypto/encryption.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
@@ -149,7 +149,8 @@ function hmacKey(): Buffer {
 export function signMediaUrl(key: string, ttlSeconds: number): string {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const sig = base64url(createHmac("sha256", hmacKey()).update(`${key}:${exp}`).digest());
-  return `${env.PUBLIC_API_URL}/media/${key}?exp=${exp}&sig=${sig}`;
+  const base = env.PUBLIC_API_URL.replace(/\/+$/, "");
+  return `${base}/media/${key}?exp=${exp}&sig=${sig}`;
 }
 
 export function verifyMediaSignature(key: string, exp: number, sig: string): boolean {
@@ -165,8 +166,9 @@ function base64url(value: Buffer): string {
   return value.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export function isPrivateKey(key: string): boolean {
-  return /(^|\/)uploads\//.test(key);
+/** `uploads/` and `generations/` keys are capability URLs: the signature replaces a session. */
+export function isSignedKey(key: string): boolean {
+  return /(^|\/)(uploads|generations)\//.test(key);
 }
 
 export function isPublicGenerationKey(key: string): boolean {
@@ -179,10 +181,19 @@ function absoluteUrl(driver: StorageDriver, key: string): string {
   return `${env.PUBLIC_API_URL}/media/${key}`;
 }
 
-/** `generations/` keys need a session, `uploads/` keys always carry a signature — see routes/media. */
+/**
+ * URLs are derived at read time, never stored: `uploads/` and `generations/` keys are signed through
+ * the API host, while any other key falls back to the driver's own URL. The S3 `publicBaseUrl` is
+ * therefore never baked into a row, so moving hosts cannot strand old renders.
+ */
 export function publicUrlFor(key: string, driver: StorageDriver): string {
-  if (isPublicGenerationKey(key)) return absoluteUrl(driver, key);
-  return signMediaUrl(key, env.MEDIA_URL_TTL_SECONDS);
+  if (isSignedKey(key)) return signMediaUrl(key, env.MEDIA_URL_TTL_SECONDS);
+  return absoluteUrl(driver, key);
+}
+
+/** Read-time URL of a rendered generation; `null` until the worker stored the output. */
+export function outputUrlFor(row: Pick<GenerationRow, "outputKey">): string | null {
+  return row.outputKey ? signMediaUrl(row.outputKey, env.MEDIA_URL_TTL_SECONDS) : null;
 }
 
 export async function urlForAsset(asset: MediaAssetRow): Promise<string> {
