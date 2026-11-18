@@ -29,7 +29,7 @@ jobs:
       - name: Stage
         run: |
           mkdir -p "$RUNNER_TEMP/stage"
-          rsync -a --exclude '.git' --exclude 'src' --exclude 'tests' --exclude '.env' ./ "$RUNNER_TEMP/stage/"
+          rsync -a --exclude '/.git' --exclude '/src' --exclude '/tests' --exclude '/.env' ./ "$RUNNER_TEMP/stage/"
 
       - name: Configure SSH
         run: |
