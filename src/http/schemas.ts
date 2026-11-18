@@ -187,6 +187,8 @@ export const GenerationSchema = z
     analysisSnapshot: z.string(),
     preContextSnapshot: z.string(),
     referenceImageUrl: z.string().nullable(),
+    /** Position of the render inside its folder; the scene chain orders on it. */
+    sequence: z.number().int(),
     selectedParams: GenerationParamsSchema,
     tokensCharged: z.number().int(),
     status: GenerationStatusSchema,
@@ -201,6 +203,8 @@ export const GenerationSchema = z
     providerStatus: z.string().nullable(),
     promptCompressed: z.boolean(),
     promptLimitChars: z.number().int().nullable(),
+    estimateMs: z.number().int().nullable(),
+    progressPercent: z.number().int().nullable(),
     createdAt: z.string(),
     completedAt: z.string().nullable(),
   })
@@ -221,6 +225,8 @@ export const ActiveGenerationSchema = z
     completedAt: z.string().nullable(),
     tokensCharged: z.number().int(),
     errorMessage: z.string().nullable(),
+    estimateMs: z.number().int().nullable(),
+    progressPercent: z.number().int().nullable(),
   })
   .openapi("ActiveGeneration");
 
@@ -244,6 +250,8 @@ export const AiModelSchema = z
     allowedParams: ModelAllowedParamsSchema,
     tokenCost: z.number().int(),
     maxPromptChars: z.number().int().nullable(),
+    thinkingEnabled: z.boolean(),
+    customReferenceId: z.string().nullable(),
     isActive: z.boolean(),
     isDefault: z.boolean(),
   })
@@ -584,6 +592,86 @@ export const ErrorResponseSchema = z
   })
   .openapi("ErrorResponse");
 
+export const AiActivityKindSchema = z.enum([
+  "PLAN",
+  "ANALYSIS",
+  "COMPRESS",
+  "RENDER_SUBMIT",
+  "RENDER_STATUS",
+  "RENDER_COMPLETE",
+  "RENDER_FAIL",
+  "MODEL_SYNC",
+  "PROVIDER_TEST",
+  "CHARACTER_TRAIN",
+]);
+
+export const AiActivityStatusSchema = z.enum(["SUCCESS", "ERROR", "PENDING"]);
+
+export const AiActivitySchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string().nullable(),
+    workspaceName: z.string().nullable(),
+    userId: z.string().nullable(),
+    folderId: z.string().nullable(),
+    generationId: z.string().nullable(),
+    kind: AiActivityKindSchema,
+    status: AiActivityStatusSchema,
+    providerId: z.string().nullable(),
+    providerName: z.string().nullable(),
+    modelId: z.string().nullable(),
+    modelName: z.string(),
+    mediaType: MediaTypeSchema.nullable(),
+    latencyMs: z.number().int(),
+    promptChars: z.number().int(),
+    responseChars: z.number().int(),
+    tokensUsed: z.number().int(),
+    externalJobId: z.string().nullable(),
+    errorCode: z.string().nullable(),
+    errorMessage: z.string().nullable(),
+    requestText: z.string(),
+    responseText: z.string(),
+    metadata: z.record(z.unknown()),
+    createdAt: z.string(),
+  })
+  .openapi("AiActivity");
+
+export const AiActivityStatsSchema = z.object({
+  total: z.number().int(),
+  success: z.number().int(),
+  error: z.number().int(),
+  avgLatencyMs: z.number().int(),
+  tokensUsed: z.number().int(),
+});
+
+export const AiActivityPageSchema = z
+  .object({
+    rows: z.array(AiActivitySchema),
+    total: z.number().int(),
+    page: z.number().int(),
+    limit: z.number().int(),
+    stats: AiActivityStatsSchema,
+  })
+  .openapi("AiActivityPage");
+
+export const AiCharacterReferenceSchema = z
+  .object({
+    id: z.string(),
+    providerId: z.string(),
+    name: z.string(),
+    modelVersion: z.string(),
+    externalId: z.string().nullable(),
+    status: z.enum(["NOT_READY", "QUEUED", "IN_PROGRESS", "COMPLETED", "FAILED"]),
+    thumbnailUrl: z.string().nullable(),
+    failReason: z.string().nullable(),
+    inputImageUrls: z.array(z.string()),
+    createdByUserId: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    completedAt: z.string().nullable(),
+  })
+  .openapi("AiCharacterReference");
+
 export type UserDto = z.infer<typeof UserSchema>;
 export type WorkspaceDto = z.infer<typeof WorkspaceSchema>;
 export type MembershipDto = z.infer<typeof WorkspaceMembershipSchema>;
@@ -612,3 +700,6 @@ export type ProviderTestDto = z.infer<typeof ProviderTestSchema>;
 export type AccountCreatedDto = z.infer<typeof AccountCreatedSchema>;
 export type AdminWorkspacesDto = z.infer<typeof AdminWorkspacesSchema>;
 export type HealthDto = z.infer<typeof HealthSchema>;
+export type AiActivityDto = z.infer<typeof AiActivitySchema>;
+export type AiActivityPageDto = z.infer<typeof AiActivityPageSchema>;
+export type AiCharacterReferenceDto = z.infer<typeof AiCharacterReferenceSchema>;

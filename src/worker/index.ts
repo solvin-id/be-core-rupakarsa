@@ -43,6 +43,12 @@ const worker = new Worker<RenderJob | Record<string, never>>(
       return;
     }
     const data = job.data as RenderJob;
+    // A repeat job from an older schedule (or any foreign entry) has no generation; treating it as
+    // a render would query with `undefined` and crash the worker.
+    if (typeof data?.generationId !== "string" || data.generationId.length === 0) {
+      logger.warn({ jobName: job.name, jobId: job.id }, "ignoring job without a generation id");
+      return;
+    }
     logger.info({ generationId: data.generationId }, "rendering generation");
     await renderGeneration(data);
   },

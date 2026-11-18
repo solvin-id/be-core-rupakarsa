@@ -15,6 +15,7 @@ import {
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
 import { purgedMapFor } from "../../services/generation-service.js";
+import { estimateOf, estimatesForModels, progressFor } from "../../services/progress-service.js";
 
 export const creatorFolderRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
 
@@ -216,8 +217,14 @@ creatorFolderRoutes.openapi(folderGenerationsRoute, async (c) => {
     .orderBy(desc(generations.createdAt));
 
   const purged = await purgedMapFor(rows.map((row) => row.id));
+  const estimates = await estimatesForModels(
+    db,
+    rows.map((row) => ({ id: row.modelId, mediaType: row.mediaType })),
+  );
   return c.json(
-    rows.map((row) => toGeneration(row, purged.get(row.id) ?? null)),
+    rows.map((row) =>
+      toGeneration(row, purged.get(row.id) ?? null, progressFor(row, estimateOf(estimates, row))),
+    ),
     200,
   );
 });

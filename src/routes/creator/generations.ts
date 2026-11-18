@@ -27,6 +27,9 @@ import {
   planGeneration,
   purgedMapFor,
 } from "../../services/generation-service.js";
+import type { GenerationRow } from "../../db/schema.js";
+import { estimateOf, estimatesForModels, progressFor } from "../../services/progress-service.js";
+import type { RenderProgress } from "../../services/progress-service.js";
 import { getAiSettings } from "../../services/settings.js";
 
 export const creatorGenerationRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
@@ -97,6 +100,7 @@ const planRoute = createRoute({
             aspectRatio: z.string(),
             attachmentKeys: z.array(z.string()).max(4).default([]),
             contextIds: z.array(z.string().uuid()).default([]),
+            continueFromPrevious: z.boolean().default(true),
           }),
         },
       },
@@ -127,6 +131,7 @@ creatorGenerationRoutes.openapi(planRoute, async (c) => {
     aspectRatio: body.aspectRatio,
     attachmentKeys: body.attachmentKeys,
     contextIds: body.contextIds,
+    continueFromPrevious: body.continueFromPrevious,
   });
 
   return c.json(result, 200);
@@ -150,6 +155,7 @@ const createGenerationRoute = createRoute({
             attachmentKeys: z.array(z.string()).max(4).default([]),
             contextIds: z.array(z.string().uuid()).default([]),
             selectedParams: GenerationParamsSchema,
+            continueFromPrevious: z.boolean().default(true),
           }),
         },
       },
@@ -185,6 +191,7 @@ creatorGenerationRoutes.openapi(createGenerationRoute, async (c) => {
     contextIds: body.contextIds,
     selectedParams: body.selectedParams,
     simulateFailure: simulateFailureFromHeader(c),
+    continueFromPrevious: body.continueFromPrevious,
   });
 
   return c.json({ generation: toGeneration(result.generation), workspace: result.workspace }, 201);
@@ -246,7 +253,12 @@ creatorGenerationRoutes.get("/generations/stream", (c) => {
         if (emitted.has(row.id)) continue;
         if (emitted.size >= STREAM_EMITTED_CAP) emitted.clear();
         emitted.add(row.id);
-        await stream.writeSSE({ event: "finished", data: JSON.stringify(toGeneration(row)) });
+        await stream.writeSSE({
+          event: "finished",
+          data: JSON.stringify(
+            toGeneration(row, null, { estimateMs: null, progressPercent: 100 }),
+          ),
+        });
       }
 
       if (next.length > 0) {
@@ -264,6 +276,19 @@ creatorGenerationRoutes.get("/generations/stream", (c) => {
     }
   });
 });
+
+/** One estimate lookup per distinct model, then a per-row percentage from persisted timestamps. */
+async function withProgress(rows: GenerationRow[]): Promise<Map<string, RenderProgress>> {
+  const estimates = await estimatesForModels(
+    db,
+    rows.map((row) => ({ id: row.modelId, mediaType: row.mediaType })),
+  );
+  const progress = new Map<string, RenderProgress>();
+  for (const row of rows) {
+    progress.set(row.id, progressFor(row, estimateOf(estimates, row)));
+  }
+  return progress;
+}
 
 const getGenerationRoute = createRoute({
   method: "get",
@@ -290,7 +315,9 @@ creatorGenerationRoutes.openapi(getGenerationRoute, async (c) => {
   if (!row) throw notFound("Generation tidak ditemukan.");
 
   const purged = await purgedMapFor([row.id]);
-  return c.json(toGeneration(row, purged.get(row.id) ?? null), 200);
+  const progress = await withProgress([row]);
+  const entry = progress.get(row.id) ?? { estimateMs: null, progressPercent: 0 };
+  return c.json(toGeneration(row, purged.get(row.id) ?? null, entry), 200);
 });
 
 const deleteGenerationRoute = createRoute({
@@ -352,7 +379,14 @@ async function loadActiveGenerations(workspaceId: string): Promise<ActiveGenerat
     )
     .orderBy(desc(generations.createdAt));
 
-  return rows.map((row) => toActiveGeneration(row.generation, row.folderName));
+  const progress = await withProgress(rows.map((row) => row.generation));
+  return rows.map((row) =>
+    toActiveGeneration(
+      row.generation,
+      row.folderName,
+      progress.get(row.generation.id) ?? { estimateMs: null, progressPercent: 0 },
+    ),
+  );
 }
 
 creatorGenerationRoutes.openapi(recentRoute, async (c) => {
@@ -372,8 +406,15 @@ creatorGenerationRoutes.openapi(recentRoute, async (c) => {
     .limit(50);
 
   const purged = await purgedMapFor(rows.map((row) => row.id));
+  const progress = await withProgress(rows);
   return c.json(
-    rows.map((row) => toGeneration(row, purged.get(row.id) ?? null)),
+    rows.map((row) =>
+      toGeneration(
+        row,
+        purged.get(row.id) ?? null,
+        progress.get(row.id) ?? { estimateMs: null, progressPercent: 0 },
+      ),
+    ),
     200,
   );
 });

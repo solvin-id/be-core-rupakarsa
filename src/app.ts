@@ -15,7 +15,9 @@ import { defaultHook } from "./http/route-helpers.js";
 import type { ErrorBody } from "./http/types.js";
 import type { AppBindings } from "./http/types.js";
 import { cmsAccountRoutes } from "./routes/cms/accounts.js";
+import { cmsAiActivityRoutes } from "./routes/cms/ai-activity.js";
 import { cmsAuditRoutes } from "./routes/cms/audit.js";
+import { cmsCharacterRoutes } from "./routes/cms/characters.js";
 import { cmsMailRoutes } from "./routes/cms/mail.js";
 import { cmsModelRoutes } from "./routes/cms/models.js";
 import { cmsOrderRoutes } from "./routes/cms/orders.js";
@@ -88,6 +90,8 @@ export function createApp(): OpenAPIHono<AppBindings> {
   app.route("/api/cms", cmsMailRoutes);
   app.route("/api/cms", cmsOrderRoutes);
   app.route("/api/cms", cmsAuditRoutes);
+  app.route("/api/cms", cmsAiActivityRoutes);
+  app.route("/api/cms", cmsCharacterRoutes);
 
   app.onError((error, c) => {
     const { status, body } = errorResponse(error, c.get("requestId"));
