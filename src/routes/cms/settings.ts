@@ -255,6 +255,7 @@ const putLimitsRoute = createRoute({
             planRequestsPerHourPerUser: z.number().int().min(1).max(10000),
             planPromptMaxChars: z.number().int().min(200).max(20000),
             finalPromptMaxChars: z.number().int().min(200).max(32000),
+            maxSceneChainScenes: z.number().int().min(1).max(10).optional(),
           }),
         },
       },
@@ -278,6 +279,7 @@ cmsSettingsRoutes.openapi(putLimitsRoute, async (c) => {
     planRequestsPerHourPerUser: body.planRequestsPerHourPerUser,
     planPromptMaxChars: body.planPromptMaxChars,
     finalPromptMaxChars: body.finalPromptMaxChars,
+    maxSceneChainScenes: body.maxSceneChainScenes ?? (await getLimitsSettings(db)).maxSceneChainScenes,
   };
   await writeSetting(db, SETTING_KEYS.limits, settings);
 

@@ -1,12 +1,12 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 
 import type { DbHandle } from "../db/client.js";
 import { folderContexts, generations } from "../db/schema.js";
 
 /** Same ceiling the pre-context service used, so a long project still fits one prompt budget. */
 export const MAX_CONTINUITY_CHARS = 6000;
-const PREVIOUS_PROMPT_CHARS = 1200;
-const PREVIOUS_VISUAL_CHARS = 800;
+const SCENE_PROMPT_CHARS = 600;
+const SCENE_VISUAL_CHARS = 400;
 
 export interface ContinuityScene {
   id: string;
@@ -18,10 +18,12 @@ export interface ContinuityScene {
 }
 
 export interface ContinuityResult {
-  /** `[STYLE ANCHORS]` plus, when enabled, `[PREVIOUS SCENE]` and `[SCENE DIRECTION]`. */
+  /** `[STYLE ANCHORS]`, one `[SCENE n]` per selected scene, and `[SCENE DIRECTION]`. */
   text: string;
-  /** Latest completed scene of the folder, available for auto-attaching as a reference. */
+  /** Latest selected scene, available for auto-attaching as a reference. */
   previous: ContinuityScene | null;
+  /** Selected completed scenes in ascending sequence order. */
+  scenes: ContinuityScene[];
 }
 
 const SCENE_DIRECTION =
@@ -51,13 +53,13 @@ function fitToBudget(sections: string[]): string {
 }
 
 /**
- * Project continuity for one render: the durable style anchors of the folder plus the previous
- * completed scene, so consecutive clips keep one film's identity. Anchors alone are returned when
- * `includePrevious` is false.
+ * Project continuity for one render: the durable style anchors of the folder plus the explicitly
+ * selected completed scenes, so each clip keeps one film's identity. No ids means anchors only;
+ * ids that no longer exist or are not completed are dropped instead of failing the render.
  */
 export async function loadContinuity(
   db: DbHandle,
-  input: { folderId: string; contextIds?: string[]; includePrevious: boolean },
+  input: { folderId: string; contextIds?: string[]; chainSceneIds: string[] },
 ): Promise<ContinuityResult> {
   const conditions = [eq(folderContexts.folderId, input.folderId), eq(folderContexts.isActive, true)];
   if (input.contextIds && input.contextIds.length > 0) {
@@ -75,49 +77,52 @@ export async function loadContinuity(
     .filter((row) => row.body.length > 0)
     .map((row) => `- [${row.label}] ${row.body}`);
 
-  if (!input.includePrevious) {
+  if (input.chainSceneIds.length === 0) {
     return {
       text: anchorLines.length > 0 ? fitToBudget(["[STYLE ANCHORS]\n" + anchorLines.join("\n")]) : "",
       previous: null,
+      scenes: [],
     };
   }
 
-  const [previousRow] = await db
+  const sceneRows = await db
     .select()
     .from(generations)
-    .where(and(eq(generations.folderId, input.folderId), eq(generations.status, "COMPLETED")))
-    .orderBy(desc(generations.completedAt))
-    .limit(1);
+    .where(
+      and(
+        eq(generations.folderId, input.folderId),
+        eq(generations.status, "COMPLETED"),
+        inArray(generations.id, input.chainSceneIds),
+      ),
+    )
+    .orderBy(asc(generations.sequence));
 
-  const previous: ContinuityScene | null = previousRow
-    ? {
-        id: previousRow.id,
-        sequence: previousRow.sequence,
-        plannedPrompt: previousRow.plannedPrompt || previousRow.finalPrompt,
-        analysisSnapshot: previousRow.analysisSnapshot,
-        outputKey: previousRow.outputKey,
-        mediaType: previousRow.mediaType,
-      }
-    : null;
+  const scenes: ContinuityScene[] = sceneRows.map((row) => ({
+    id: row.id,
+    sequence: row.sequence,
+    plannedPrompt: row.plannedPrompt || row.finalPrompt,
+    analysisSnapshot: row.analysisSnapshot,
+    outputKey: row.outputKey,
+    mediaType: row.mediaType,
+  }));
+  const previous = scenes[scenes.length - 1] ?? null;
 
   const sections: string[] = [];
   if (anchorLines.length > 0) sections.push(`[STYLE ANCHORS]\n${anchorLines.join("\n")}`);
-  if (previous) {
+  for (const scene of scenes) {
     sections.push(
       [
-        "[PREVIOUS SCENE]",
-        `scene: ${previous.sequence} — ${clip(previous.plannedPrompt, PREVIOUS_PROMPT_CHARS)}`,
-        previous.analysisSnapshot.trim().length > 0
-          ? `visual: ${clip(previous.analysisSnapshot, PREVIOUS_VISUAL_CHARS)}`
+        `[SCENE ${scene.sequence}]`,
+        `scene: ${clip(scene.plannedPrompt, SCENE_PROMPT_CHARS)}`,
+        scene.analysisSnapshot.trim().length > 0
+          ? `visual: ${clip(scene.analysisSnapshot, SCENE_VISUAL_CHARS)}`
           : null,
-        "",
-        "[SCENE DIRECTION]",
-        SCENE_DIRECTION,
       ]
         .filter((line): line is string => line !== null)
         .join("\n"),
     );
   }
+  if (scenes.length > 0) sections.push(`[SCENE DIRECTION]\n${SCENE_DIRECTION}`);
 
-  return { text: sections.length > 0 ? fitToBudget(sections) : "", previous };
+  return { text: sections.length > 0 ? fitToBudget(sections) : "", previous, scenes };
 }

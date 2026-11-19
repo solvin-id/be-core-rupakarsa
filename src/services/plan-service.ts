@@ -147,7 +147,7 @@ export function buildDirectPrompt(input: {
     input.attachmentTexts.length > 0
       ? `[ATTACHMENT NOTES]\n${input.attachmentTexts.map((text, index) => `#${index + 1} ${text}`).join("\n")}`
       : null,
-    continuity.includes("[PREVIOUS SCENE]")
+    continuity.includes("[SCENE DIRECTION]")
       ? "[STYLE LOCK] Same film as previous scene: palette, grade, lens and wardrobe unchanged."
       : null,
   ]

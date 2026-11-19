@@ -153,7 +153,11 @@ describe("prompt limits and compression", () => {
     const config = await admin.json<{
       limits: { planPromptMaxChars: number; finalPromptMaxChars: number };
     }>("/api/public/config");
-    expect(config.body.limits).toEqual({ planPromptMaxChars: 500, finalPromptMaxChars: 300 });
+    expect(config.body.limits).toEqual({
+      planPromptMaxChars: 500,
+      finalPromptMaxChars: 300,
+      maxSceneChainScenes: 2,
+    });
   });
 
   it("rejects a brief one character past the configured ceiling", async () => {

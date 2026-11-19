@@ -100,7 +100,7 @@ const planRoute = createRoute({
             aspectRatio: z.string(),
             attachmentKeys: z.array(z.string()).max(4).default([]),
             contextIds: z.array(z.string().uuid()).default([]),
-            continueFromPrevious: z.boolean().default(true),
+            chainSceneIds: z.array(z.string().uuid()).max(20).default([]),
           }),
         },
       },
@@ -131,7 +131,7 @@ creatorGenerationRoutes.openapi(planRoute, async (c) => {
     aspectRatio: body.aspectRatio,
     attachmentKeys: body.attachmentKeys,
     contextIds: body.contextIds,
-    continueFromPrevious: body.continueFromPrevious,
+    chainSceneIds: body.chainSceneIds,
   });
 
   return c.json(result, 200);
@@ -155,7 +155,7 @@ const createGenerationRoute = createRoute({
             attachmentKeys: z.array(z.string()).max(4).default([]),
             contextIds: z.array(z.string().uuid()).default([]),
             selectedParams: GenerationParamsSchema,
-            continueFromPrevious: z.boolean().default(true),
+            chainSceneIds: z.array(z.string().uuid()).max(20).default([]),
           }),
         },
       },
@@ -191,7 +191,7 @@ creatorGenerationRoutes.openapi(createGenerationRoute, async (c) => {
     contextIds: body.contextIds,
     selectedParams: body.selectedParams,
     simulateFailure: simulateFailureFromHeader(c),
-    continueFromPrevious: body.continueFromPrevious,
+    chainSceneIds: body.chainSceneIds,
   });
 
   return c.json({ generation: toGeneration(result.generation), workspace: result.workspace }, 201);

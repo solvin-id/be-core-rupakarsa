@@ -53,8 +53,8 @@ export interface PlanGenerationInput {
   aspectRatio: string;
   attachmentKeys: string[];
   contextIds?: string[];
-  /** Include the folder's previous completed scene in the plan prompt. */
-  continueFromPrevious: boolean;
+  /** Completed scenes whose prompt/visual notes feed the plan prompt. */
+  chainSceneIds: string[];
 }
 
 export interface PlanGenerationResult {
@@ -78,8 +78,8 @@ export interface CreateGenerationInput {
   contextIds: string[];
   selectedParams: GenerationParams;
   simulateFailure: boolean;
-  /** Auto-attach the previous scene and inject its notes; false starts a fresh scene. */
-  continueFromPrevious: boolean;
+  /** Completed scenes whose notes are injected and whose newest clip becomes the reference. */
+  chainSceneIds: string[];
 }
 
 export interface CreateGenerationResult {
@@ -281,6 +281,9 @@ export async function markProviderStatus(
 
 export async function planGeneration(input: PlanGenerationInput): Promise<PlanGenerationResult> {
   const limits = await getLimitsSettings(db);
+  if (input.chainSceneIds.length > limits.maxSceneChainScenes) {
+    throw validation(`Pilih maksimal ${limits.maxSceneChainScenes} scene untuk chain.`);
+  }
   if (input.rawPrompt.trim().length === 0 || input.rawPrompt.length > limits.planPromptMaxChars) {
     throw validation(`Brief maksimal ${limits.planPromptMaxChars} karakter dan tidak boleh kosong.`);
   }
@@ -306,7 +309,7 @@ export async function planGeneration(input: PlanGenerationInput): Promise<PlanGe
   const continuity = await loadContinuity(db, {
     folderId: folder.id,
     contextIds: input.contextIds ?? [],
-    includePrevious: input.continueFromPrevious,
+    chainSceneIds: input.chainSceneIds,
   });
   const promptLimit = promptLimitFor(model, limits);
 
@@ -363,6 +366,9 @@ export async function planGeneration(input: PlanGenerationInput): Promise<PlanGe
 
 export async function createGeneration(input: CreateGenerationInput): Promise<CreateGenerationResult> {
   const limits = await getLimitsSettings(db);
+  if (input.chainSceneIds.length > limits.maxSceneChainScenes) {
+    throw validation(`Pilih maksimal ${limits.maxSceneChainScenes} scene untuk chain.`);
+  }
   if (input.rawPrompt.trim().length === 0 || input.rawPrompt.length > limits.planPromptMaxChars) {
     throw validation(`Brief maksimal ${limits.planPromptMaxChars} karakter dan tidak boleh kosong.`);
   }
@@ -391,7 +397,7 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
   const continuity = await loadContinuity(db, {
     folderId: folder.id,
     contextIds: input.contextIds,
-    includePrevious: input.continueFromPrevious,
+    chainSceneIds: input.chainSceneIds,
   });
   const promptLimit = promptLimitFor(model, limits);
   const attachmentTexts = analyses.map((entry) => entry.text);
@@ -431,7 +437,6 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
   // media file the user attached.
   const continuityAsset =
     !firstAttachment &&
-    input.continueFromPrevious &&
     continuity.previous?.outputKey &&
     modelSupportsImageReference(model)
       ? await loadAssetByKey(continuity.previous.outputKey)

@@ -338,6 +338,7 @@ export const PublicConfigSchema = z
     limits: z.object({
       planPromptMaxChars: z.number().int(),
       finalPromptMaxChars: z.number().int(),
+      maxSceneChainScenes: z.number().int(),
     }),
   })
   .openapi("PublicConfig");
@@ -372,6 +373,7 @@ export const LimitsSettingsSchema = z
     planRequestsPerHourPerUser: z.number().int(),
     planPromptMaxChars: z.number().int(),
     finalPromptMaxChars: z.number().int(),
+    maxSceneChainScenes: z.number().int(),
   })
   .openapi("LimitsSettings");
 

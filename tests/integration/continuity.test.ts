@@ -29,7 +29,12 @@ async function fixture(email: string) {
 }
 
 /** A finished scene with a stored output, which is what continuity reads. */
-async function seedPreviousScene(workspaceId: string, folderId: string, modelId: string) {
+async function seedPreviousScene(
+  workspaceId: string,
+  folderId: string,
+  modelId: string,
+  overrides: { sequence?: number; plannedPrompt?: string; analysisSnapshot?: string } = {},
+) {
   const key = `workspaces/${workspaceId}/generations/${crypto.randomUUID()}.png`;
   await putAsset(workspaceId, key, PNG_BYTES, "image/png");
 
@@ -42,12 +47,16 @@ async function seedPreviousScene(workspaceId: string, folderId: string, modelId:
       modelName: "Scene One",
       mediaType: "IMAGE",
       rawPrompt: "Mbok Srini menutup pintu",
-      plannedPrompt: "Mbok Srini closes the heavy teak door, lantern light spilling on the stone floor.",
+      plannedPrompt:
+        overrides.plannedPrompt ??
+        "Mbok Srini closes the heavy teak door, lantern light spilling on the stone floor.",
       finalPrompt: "Mbok Srini closes the heavy teak door.",
-      analysisSnapshot: "Subject: elderly Javanese woman in batik. Palette: amber and cold stone.",
+      analysisSnapshot:
+        overrides.analysisSnapshot ??
+        "Subject: elderly Javanese woman in batik. Palette: amber and cold stone.",
       selectedParams: { resolution: "1k", aspectRatio: "1:1" },
       status: "COMPLETED",
-      sequence: 1,
+      sequence: overrides.sequence ?? 1,
       outputKey: key,
       completedAt: new Date(),
     })
@@ -60,7 +69,7 @@ function generationBody(input: {
   folderId: string;
   modelId: string;
   rawPrompt: string;
-  continueFromPrevious?: boolean;
+  chainSceneIds?: string[];
 }) {
   return jsonBody({
     folderId: input.folderId,
@@ -71,9 +80,7 @@ function generationBody(input: {
     attachmentKeys: [],
     contextIds: [],
     selectedParams: { resolution: "1k", aspectRatio: "1:1" },
-    ...(input.continueFromPrevious === undefined
-      ? {}
-      : { continueFromPrevious: input.continueFromPrevious }),
+    ...(input.chainSceneIds === undefined ? {} : { chainSceneIds: input.chainSceneIds }),
   });
 }
 
@@ -95,7 +102,12 @@ describe("scene continuity", () => {
 
     const created = await fx.client.json<{ generation: { id: string } }>(
       "/api/creator/generations",
-      generationBody({ folderId: fx.folderId, modelId: model.id, rawPrompt: "Dia berjalan ke koridor" }),
+      generationBody({
+        folderId: fx.folderId,
+        modelId: model.id,
+        rawPrompt: "Dia berjalan ke koridor",
+        chainSceneIds: [previous.row.id],
+      }),
     );
     expect(created.status).toBe(201);
 
@@ -105,7 +117,7 @@ describe("scene continuity", () => {
       .where(eq(generations.id, created.body.generation.id))
       .limit(1);
 
-    expect(row?.finalPrompt).toContain("[PREVIOUS SCENE]");
+    expect(row?.finalPrompt).toContain("[SCENE 1]");
     expect(row?.finalPrompt).toContain("[STYLE LOCK]");
     expect(row?.finalPrompt).toContain("Mbok Srini closes the heavy teak door");
     expect(row?.referenceImageUrl).toBe(previous.key);
@@ -126,7 +138,7 @@ describe("scene continuity", () => {
     expect(attachments[0]?.sourceGenerationId).toBe(previous.row.id);
   });
 
-  it("starts a fresh scene when continuity is turned off", async () => {
+  it("starts a fresh scene when no scene is selected", async () => {
     const fx = await fixture("continuity-off@example.test");
     const model = await modelByCode("flux-image");
     await db
@@ -142,7 +154,6 @@ describe("scene continuity", () => {
         folderId: fx.folderId,
         modelId: model.id,
         rawPrompt: "Adegan baru di pasar",
-        continueFromPrevious: false,
       }),
     );
     expect(created.status).toBe(201);
@@ -153,7 +164,8 @@ describe("scene continuity", () => {
       .where(eq(generations.id, created.body.generation.id))
       .limit(1);
 
-    expect(row?.finalPrompt).not.toContain("[PREVIOUS SCENE]");
+    expect(row?.finalPrompt).not.toContain("[SCENE 1]");
+    expect(row?.finalPrompt).not.toContain("[SCENE DIRECTION]");
     expect(row?.finalPrompt).not.toContain("[STYLE LOCK]");
     expect(row?.referenceImageUrl).toBeNull();
     expect(row?.continuitySourceId).toBeNull();
@@ -165,6 +177,52 @@ describe("scene continuity", () => {
       .from(generationAttachments)
       .where(eq(generationAttachments.generationId, created.body.generation.id));
     expect(attachments).toHaveLength(0);
+  });
+
+  it("chains every selected scene and references the newest one", async () => {
+    const fx = await fixture("continuity-chain@example.test");
+    const model = await modelByCode("flux-image");
+    await db
+      .update(aiModels)
+      .set({ syncMetadata: { requestFields: ["resolution", "aspectRatio", "image"] } })
+      .where(eq(aiModels.id, model.id));
+
+    const first = await seedPreviousScene(fx.workspaceId, fx.folderId, model.id, {
+      sequence: 1,
+      plannedPrompt: "Mbok Srini membuka pintu kayu.",
+      analysisSnapshot: "Palette: amber. Wardrobe: batik.",
+    });
+    const second = await seedPreviousScene(fx.workspaceId, fx.folderId, model.id, {
+      sequence: 2,
+      plannedPrompt: "Mbok Srini menuruni tangga batu.",
+      analysisSnapshot: "Palette: cold blue. Lens: 35mm.",
+    });
+
+    const created = await fx.client.json<{ generation: { id: string } }>(
+      "/api/creator/generations",
+      generationBody({
+        folderId: fx.folderId,
+        modelId: model.id,
+        rawPrompt: "Dia menyalakan lampu",
+        chainSceneIds: [second.row.id, first.row.id],
+      }),
+    );
+    expect(created.status).toBe(201);
+
+    const [row] = await db
+      .select()
+      .from(generations)
+      .where(eq(generations.id, created.body.generation.id))
+      .limit(1);
+
+    expect(row?.preContextSnapshot).toContain("[SCENE 1]");
+    expect(row?.preContextSnapshot).toContain("[SCENE 2]");
+    expect(row?.preContextSnapshot).toContain("Mbok Srini membuka pintu kayu.");
+    expect(row?.preContextSnapshot).toContain("Mbok Srini menuruni tangga batu.");
+    // Exactly one direction block closes the chain, regardless of how many scenes were selected.
+    expect(row?.preContextSnapshot?.match(/\[SCENE DIRECTION\]/g)).toHaveLength(1);
+    expect(row?.continuitySourceId).toBe(second.row.id);
+    expect(row?.referenceImageUrl).toBe(second.key);
   });
 
   it("returns the previous scene through the media route as a signed URL", async () => {

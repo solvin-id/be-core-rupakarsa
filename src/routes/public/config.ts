@@ -66,6 +66,7 @@ publicRoutes.openapi(configRoute, async (c) => {
       limits: {
         planPromptMaxChars: limits.planPromptMaxChars,
         finalPromptMaxChars: limits.finalPromptMaxChars,
+        maxSceneChainScenes: limits.maxSceneChainScenes,
       },
     },
     200,

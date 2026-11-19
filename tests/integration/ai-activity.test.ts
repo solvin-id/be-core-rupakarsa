@@ -124,7 +124,6 @@ describe("CMS AI activity log", () => {
         aspectRatio: "16:9",
         attachmentKeys: [],
         contextIds: [],
-        continueFromPrevious: false,
       }),
     );
     expect(plan.status).toBe(200);

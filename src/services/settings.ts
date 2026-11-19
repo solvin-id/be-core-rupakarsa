@@ -80,6 +80,8 @@ export interface LimitsSettings {
   planPromptMaxChars: number;
   /** Default final-prompt ceiling for models without their own `max_prompt_chars`. */
   finalPromptMaxChars: number;
+  /** How many completed scenes one render may chain for continuity. */
+  maxSceneChainScenes: number;
 }
 
 export const DEFAULT_PRICING: Pricing = {
@@ -139,6 +141,7 @@ export const DEFAULT_LIMITS: LimitsSettings = {
   planRequestsPerHourPerUser: 60,
   planPromptMaxChars: 2000,
   finalPromptMaxChars: 4000,
+  maxSceneChainScenes: 2,
 };
 
 export async function readSetting<T>(db: DbHandle, key: string, fallback: T): Promise<T> {
