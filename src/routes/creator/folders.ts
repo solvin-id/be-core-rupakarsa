@@ -15,6 +15,7 @@ import {
 } from "../../http/schemas.js";
 import type { AppBindings } from "../../http/types.js";
 import { purgedMapFor } from "../../services/generation-service.js";
+import { getCharacterRow } from "../../services/higgsfield-character-service.js";
 import { estimateOf, estimatesForModels, progressFor } from "../../services/progress-service.js";
 
 export const creatorFolderRoutes = new OpenAPIHono<AppBindings>({ defaultHook });
@@ -119,7 +120,11 @@ const patchFolderRoute = createRoute({
     body: {
       content: {
         "application/json": {
-          schema: z.object({ name: z.string().optional(), description: z.string().optional() }),
+          schema: z.object({
+            name: z.string().optional(),
+            description: z.string().optional(),
+            characterReferenceId: z.string().uuid().nullable().optional(),
+          }),
         },
       },
     },
@@ -139,13 +144,29 @@ creatorFolderRoutes.openapi(patchFolderRoute, async (c) => {
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
 
-  const patch: { name?: string; description?: string; updatedAt: Date } = { updatedAt: new Date() };
+  const patch: {
+    name?: string;
+    description?: string;
+    characterReferenceId?: string | null;
+    updatedAt: Date;
+  } = { updatedAt: new Date() };
   if (body.name !== undefined) {
     const name = body.name.trim();
     if (name.length < 2) throw validation("Nama folder minimal 2 karakter.");
     patch.name = name;
   }
   if (body.description !== undefined) patch.description = body.description.trim();
+  if (body.characterReferenceId !== undefined) {
+    if (body.characterReferenceId === null) {
+      patch.characterReferenceId = null;
+    } else {
+      const character = await getCharacterRow(body.characterReferenceId, workspaceId);
+      if (character.status !== "COMPLETED" || !character.externalId) {
+        throw validation("Karakter belum selesai dilatih.");
+      }
+      patch.characterReferenceId = character.id;
+    }
+  }
 
   const [folder] = await db
     .update(folders)

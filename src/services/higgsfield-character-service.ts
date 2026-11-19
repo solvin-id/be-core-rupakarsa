@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import type { AiCharacterReferenceRow, AiProviderRow } from "../db/schema.js";
 import { aiCharacterReferences, aiProviders } from "../db/schema.js";
@@ -14,6 +14,8 @@ export type CharacterStatus = "NOT_READY" | "QUEUED" | "IN_PROGRESS" | "COMPLETE
 
 export interface CreateCharacterInput {
   provider: AiProviderRow;
+  /** Training workspace; null keeps a CMS-created row global. */
+  workspaceId: string | null;
   name: string;
   modelVersion: "v1" | "v2" | "cinema";
   imageUrls: string[];
@@ -124,6 +126,7 @@ export async function createCharacter(
       .insert(aiCharacterReferences)
       .values({
         providerId: input.provider.id,
+        workspaceId: input.workspaceId,
         name: input.name.trim(),
         modelVersion: input.modelVersion,
         externalId,
@@ -227,6 +230,32 @@ export async function refreshCharacter(id: string): Promise<AiCharacterReference
   return updated;
 }
 
-export async function listCharacters(): Promise<AiCharacterReferenceRow[]> {
-  return db.select().from(aiCharacterReferences).orderBy(desc(aiCharacterReferences.createdAt));
+/** Without a workspace the CMS sees every row; a workspace id narrows to its own training runs. */
+export async function listCharacters(workspaceId?: string | null): Promise<AiCharacterReferenceRow[]> {
+  const query = db.select().from(aiCharacterReferences);
+  const rows =
+    typeof workspaceId === "string"
+      ? await query
+          .where(eq(aiCharacterReferences.workspaceId, workspaceId))
+          .orderBy(desc(aiCharacterReferences.createdAt))
+      : await query.orderBy(desc(aiCharacterReferences.createdAt));
+  return rows;
+}
+
+/** One character the workspace may select; a cross-workspace or missing id is a 404. */
+export async function getCharacterRow(
+  id: string,
+  workspaceId: string | null,
+): Promise<AiCharacterReferenceRow> {
+  const conditions = [eq(aiCharacterReferences.id, id)];
+  if (typeof workspaceId === "string") {
+    conditions.push(eq(aiCharacterReferences.workspaceId, workspaceId));
+  }
+  const [row] = await db
+    .select()
+    .from(aiCharacterReferences)
+    .where(and(...conditions))
+    .limit(1);
+  if (!row) throw notFound("Referensi karakter tidak ditemukan.");
+  return row;
 }

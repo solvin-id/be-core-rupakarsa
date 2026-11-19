@@ -151,6 +151,10 @@ export const folders = pgTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Project-level Soul ID; the render adapter passes its provider id when completed. */
+    characterReferenceId: uuid("character_reference_id").references(() => aiCharacterReferences.id, {
+      onDelete: "set null",
+    }),
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -242,6 +246,8 @@ export const generations = pgTable(
     tokensCharged: integer("tokens_charged").notNull().default(0),
     status: generationStatusEnum("status").notNull().default("QUEUED"),
     externalJobId: text("external_job_id"),
+    /** Provider Soul ID external id captured at create time, so a later folder change cannot alter it. */
+    customReferenceId: text("custom_reference_id"),
     /** Authoritative storage key; the URL is derived and signed at read time. */
     outputKey: text("output_key"),
     /** Position of this render inside its folder, used to order the scene chain. */
@@ -319,6 +325,8 @@ export const aiCharacterReferences = pgTable(
   "ai_character_references",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** Training workspace; null for legacy/CMS rows that stay global. */
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
     providerId: uuid("provider_id")
       .notNull()
       .references(() => aiProviders.id, { onDelete: "cascade" }),
@@ -334,7 +342,10 @@ export const aiCharacterReferences = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
-  (table) => [uniqueIndex("ai_character_references_external_idx").on(table.externalId)],
+  (table) => [
+    uniqueIndex("ai_character_references_external_idx").on(table.externalId),
+    index("ai_character_references_workspace_idx").on(table.workspaceId),
+  ],
 );
 
 export const tokenLedger = pgTable(

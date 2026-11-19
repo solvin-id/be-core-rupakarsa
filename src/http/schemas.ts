@@ -124,6 +124,7 @@ export const FolderSchema = z
     userId: z.string().nullable(),
     name: z.string(),
     description: z.string(),
+    characterReferenceId: z.string().nullable(),
     createdAt: z.string(),
     updatedAt: z.string(),
   })

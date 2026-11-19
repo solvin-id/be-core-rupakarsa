@@ -83,8 +83,8 @@ export class HiggsfieldRenderAdapter implements RenderAdapter, VideoRenderAdapte
         ? { video_urls: input.referenceVideos.slice(0, 5) }
         : {}),
       ...(fields.includes("thinking") && this.model.thinkingEnabled ? { enable_thinking: true } : {}),
-      ...(fields.includes("customReference") && this.model.customReferenceId
-        ? { custom_reference_id: this.model.customReferenceId }
+      ...(fields.includes("customReference") && (input.customReferenceId ?? this.model.customReferenceId)
+        ? { custom_reference_id: input.customReferenceId ?? this.model.customReferenceId }
         : {}),
     };
 

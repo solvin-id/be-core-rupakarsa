@@ -134,6 +134,7 @@ export async function renderGeneration(job: RenderJob): Promise<void> {
       simulateFailure: job.simulateFailure,
       referenceImages: referenceUrl ? [referenceUrl] : [],
       referenceVideos: [],
+      customReferenceId: generation.customReferenceId,
     };
     const signal = AbortSignal.timeout(
       request.mediaType === "VIDEO" ? VIDEO_RENDER_TIMEOUT_MS : IMAGE_RENDER_TIMEOUT_MS,

@@ -29,6 +29,7 @@ import { creatorAccountRoutes } from "./routes/creator/account.js";
 import { creatorAnalysisRoutes } from "./routes/creator/analyses.js";
 import { creatorAuthRoutes } from "./routes/creator/auth.js";
 import { creatorBillingRoutes } from "./routes/creator/billing.js";
+import { creatorCharacterRoutes } from "./routes/creator/characters.js";
 import { creatorContextRoutes } from "./routes/creator/contexts.js";
 import { creatorFolderRoutes } from "./routes/creator/folders.js";
 import { creatorGenerationRoutes } from "./routes/creator/generations.js";
@@ -75,6 +76,7 @@ export function createApp(): OpenAPIHono<AppBindings> {
   app.route("/api/creator", creatorWorkspaceRoutes);
   app.route("/api/creator", creatorFolderRoutes);
   app.route("/api/creator", creatorGenerationRoutes);
+  app.route("/api/creator", creatorCharacterRoutes);
   app.route("/api/creator", creatorContextRoutes);
   app.route("/api/creator", creatorAnalysisRoutes);
   app.route("/api/creator", creatorStorageRoutes);

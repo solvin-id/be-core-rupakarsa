@@ -104,6 +104,7 @@ export function toFolder(row: FolderRow): FolderDto {
     userId: row.userId,
     name: row.name,
     description: row.description,
+    characterReferenceId: row.characterReferenceId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

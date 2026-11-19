@@ -26,6 +26,8 @@ export interface RenderRequest {
   referenceImages: string[];
   /** Motion references for workflows that take video input. */
   referenceVideos: string[];
+  /** Provider Soul ID captured on the generation row; overrides the model's default. */
+  customReferenceId?: string | null;
 }
 
 export interface RenderResult {

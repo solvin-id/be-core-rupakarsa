@@ -47,6 +47,10 @@ beforeAll(async () => {
       return c.json({ status: "queued", request_id: `job-${submissions.length}` });
     });
   }
+  app.post("/higgsfield-ai/soul/v2/standard", async (c) => {
+    submissions.push((await c.req.json()) as Record<string, unknown>);
+    return c.json({ status: "queued", request_id: `job-${submissions.length}` });
+  });
 
   app.get("/requests/:id/status", (c) => {
     const id = c.req.param("id");
@@ -68,12 +72,6 @@ afterAll(() => {
   server?.close();
 });
 
-async function adminClient() {
-  const client = helpers.createClient();
-  await helpers.login(client, process.env.SEED_SUPERADMIN_EMAIL ?? "admin@rupakarsa.id");
-  return client;
-}
-
 async function pointHiggsfieldAtMock(): Promise<void> {
   await db
     .update(aiProviders)
@@ -92,18 +90,20 @@ async function studioFixture(email: string) {
   const client = helpers.createClient();
   await helpers.login(client, email);
   const folder = await helpers.createFolder(client, "Tuning");
-  return { client, folderId: folder.id };
+  return { client, folderId: folder.id, workspaceId: account.workspace.id };
 }
 
-async function uploadPng(client: ReturnType<typeof helpers.createClient>): Promise<string> {
+async function uploadPng(
+  client: ReturnType<typeof helpers.createClient>,
+): Promise<{ id: string; key: string }> {
   const form = new FormData();
   form.append("file", new File([PNG_BYTES], "frame.png", { type: "image/png" }));
-  const uploaded = await client.json<{ key: string }>("/api/creator/uploads", {
+  const uploaded = await client.json<{ id: string; key: string }>("/api/creator/uploads", {
     method: "POST",
     body: form,
   });
   if (uploaded.status !== 201) throw new Error(`upload failed: ${JSON.stringify(uploaded.body)}`);
-  return uploaded.body.key;
+  return { id: uploaded.body.id, key: uploaded.body.key };
 }
 
 interface CharacterBody {
@@ -122,15 +122,17 @@ describe("higgsfield tuning", () => {
     await pointHiggsfieldAtMock();
   });
 
-  it("trains a Soul ID, lists it, and refreshes its provider state", async () => {
-    const admin = await adminClient();
+  it("trains a Soul ID from uploaded assets, lists it, and refreshes its provider state", async () => {
+    const fx = await studioFixture("tuning-train@example.test");
+    const first = await uploadPng(fx.client);
+    const second = await uploadPng(fx.client);
 
-    const created = await admin.json<CharacterBody>(
-      "/api/cms/higgsfield/characters",
+    const created = await fx.client.json<CharacterBody>(
+      "/api/creator/characters",
       helpers.jsonBody({
         name: "Mbok Srini",
         modelVersion: "v1",
-        imageUrls: ["https://cdn.example.test/a.jpg", "https://cdn.example.test/b.jpg"],
+        imageAssetIds: [first.id, second.id],
       }),
     );
     expect(created.status).toBe(201);
@@ -138,26 +140,95 @@ describe("higgsfield tuning", () => {
     expect(created.body.status).toBe("QUEUED");
 
     expect(characterBodies).toHaveLength(1);
-    expect(characterBodies[0]).toMatchObject({
-      name: "Mbok Srini",
-      model_version: "v1",
-      input_images: [
-        { type: "image_url", image_url: "https://cdn.example.test/a.jpg" },
-        { type: "image_url", image_url: "https://cdn.example.test/b.jpg" },
-      ],
-    });
+    const body = characterBodies[0] ?? {};
+    expect(body.name).toBe("Mbok Srini");
+    expect(body.model_version).toBe("v1");
+    const images = body.input_images as Array<{ type: string; image_url: string }>;
+    expect(images).toHaveLength(2);
+    for (const image of images) {
+      expect(image.type).toBe("image_url");
+      expect(image.image_url).toContain("/media/");
+    }
 
-    const listed = await admin.json<CharacterBody[]>("/api/cms/higgsfield/characters");
+    const listed = await fx.client.json<CharacterBody[]>("/api/creator/characters");
     expect(listed.status).toBe(200);
     expect(listed.body.map((row) => row.externalId)).toContain("char-1");
 
-    const refreshed = await admin.json<CharacterBody>(
-      `/api/cms/higgsfield/characters/${created.body.id}/refresh`,
+    const refreshed = await fx.client.json<CharacterBody>(
+      `/api/creator/characters/${created.body.id}/refresh`,
       { method: "POST" },
     );
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.status).toBe("COMPLETED");
     expect(refreshed.body.thumbnailUrl).toBe("https://cdn.example.test/char-1.png");
+  });
+
+  it("rejects Soul ID training from a workspace member", async () => {
+    const fx = await studioFixture("tuning-owner@example.test");
+    const member = await helpers.createAccount({ email: "tuning-member@example.test" });
+    await helpers.addMember(fx.workspaceId, member.user.id, "MEMBER");
+
+    const memberClient = helpers.createClient();
+    await helpers.login(memberClient, "tuning-member@example.test");
+    await helpers.activateWorkspace(memberClient, fx.workspaceId);
+
+    const asset = await uploadPng(memberClient);
+    const rejected = await memberClient.json<{ error: { message: string } }>(
+      "/api/creator/characters",
+      helpers.jsonBody({ name: "Bukan Admin", imageAssetIds: [asset.id] }),
+    );
+    expect(rejected.status).toBe(403);
+    expect(characterBodies).toHaveLength(0);
+  });
+
+  it("sends the project Soul ID as custom_reference_id", async () => {
+    const fx = await studioFixture("tuning-project-soul@example.test");
+    const model = await helpers.modelByCode("soul-v2");
+    const asset = await uploadPng(fx.client);
+
+    const trained = await fx.client.json<CharacterBody>(
+      "/api/creator/characters",
+      helpers.jsonBody({ name: "Mbok Srini", modelVersion: "v1", imageAssetIds: [asset.id] }),
+    );
+    expect(trained.status).toBe(201);
+    const refreshed = await fx.client.json<CharacterBody>(
+      `/api/creator/characters/${trained.body.id}/refresh`,
+      { method: "POST" },
+    );
+    expect(refreshed.body.status).toBe("COMPLETED");
+
+    const patched = await fx.client.json<{ characterReferenceId: string | null }>(
+      `/api/creator/folders/${fx.folderId}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ characterReferenceId: trained.body.id }),
+      },
+    );
+    expect(patched.status).toBe(200);
+    expect(patched.body.characterReferenceId).toBe(trained.body.id);
+
+    const created = await fx.client.json<{ generation: { id: string } }>(
+      "/api/creator/generations",
+      helpers.jsonBody({
+        folderId: fx.folderId,
+        modelId: model.id,
+        rawPrompt: "Mbok Srini menyalakan lampu minyak",
+        planMode: false,
+        finalPrompt: null,
+        attachmentKeys: [],
+        contextIds: [],
+        selectedParams: {
+          resolution: model.allowedParams.resolutions[0],
+          aspectRatio: model.allowedParams.aspectRatios[0],
+        },
+      }),
+    );
+    expect(created.status).toBe(201);
+    await helpers.pollGeneration(fx.client, created.body.generation.id, ["COMPLETED", "FAILED"]);
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]).toMatchObject({ custom_reference_id: "char-1" });
   });
 
   it("sends Deep Thinking to a Wan 3.0 workflow when the model enables it", async () => {
@@ -187,7 +258,7 @@ describe("higgsfield tuning", () => {
   it("sends the reference image to an image-to-video workflow", async () => {
     const fx = await studioFixture("tuning-i2v@example.test");
     const model = await helpers.modelByCode("wan-3.0-i2v");
-    const attachmentKey = await uploadPng(fx.client);
+    const attachment = await uploadPng(fx.client);
 
     const created = await fx.client.json<{ generation: { id: string } }>(
       "/api/creator/generations",
@@ -197,9 +268,8 @@ describe("higgsfield tuning", () => {
         rawPrompt: "Dia menoleh ke kamera",
         planMode: true,
         finalPrompt: "She turns toward camera, lantern still in hand",
-        attachmentKeys: [attachmentKey],
+        attachmentKeys: [attachment.key],
         selectedParams: { durationSec: 5, resolution: "720p", aspectRatio: "16:9" },
-        continueFromPrevious: false,
       }),
     );
     expect(created.status).toBe(201);

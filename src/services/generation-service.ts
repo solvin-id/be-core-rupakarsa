@@ -29,6 +29,7 @@ import { modelSupportsImageReference } from "./model-capabilities.js";
 import type { PlanAttachment } from "./plan-service.js";
 import { assertAttachmentsSupported, buildDirectPrompt, runPlanModel } from "./plan-service.js";
 import { loadContinuity } from "./continuity-service.js";
+import { getCharacterRow } from "./higgsfield-character-service.js";
 import { resolveOutputMime } from "./media-mime.js";
 import { compressPrompt } from "./prompt-compressor.js";
 import { promptLimitFor } from "./prompt-limit.js";
@@ -378,6 +379,13 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
   assertParamsAllowed(model, input.selectedParams);
   await assertDailyGenerationQuota(input.workspaceId);
 
+  // Snapshot the project's Soul ID so a later project change cannot alter an already queued render;
+  // a deleted folder reference (FK set null) or an unfinished character falls back to the model.
+  const character = folder.characterReferenceId
+    ? await getCharacterRow(folder.characterReferenceId, folder.workspaceId)
+    : null;
+  const customReferenceId = character?.status === "COMPLETED" ? character.externalId : null;
+
   const resolved = await loadAttachments(input.workspaceId, input.userId, input.attachmentKeys);
   // Plan mode only needs attachment analyses when a plan model can read them; direct mode always
   // needs them because they are what the server composes from.
@@ -480,6 +488,7 @@ export async function createGeneration(input: CreateGenerationInput): Promise<Cr
         tokensCharged: model.tokenCost,
         status: "QUEUED",
         externalJobId: null,
+        customReferenceId,
         outputKey: null,
         sequence,
         continuitySourceId: continuityAsset ? continuity.previous?.id ?? null : null,
