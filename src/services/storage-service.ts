@@ -146,8 +146,13 @@ function hmacKey(): Buffer {
   return bytes;
 }
 
+/** URLs stay valid for `ttlSeconds` but only change once per hour bucket, so the browser's
+ * immutable cache survives reloads; the expiry is always at or after `now + ttlSeconds`. */
+const MEDIA_URL_BUCKET_SECONDS = 3600;
+
 export function signMediaUrl(key: string, ttlSeconds: number): string {
-  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const now = Math.floor(Date.now() / 1000);
+  const exp = Math.ceil((now + ttlSeconds) / MEDIA_URL_BUCKET_SECONDS) * MEDIA_URL_BUCKET_SECONDS;
   const sig = base64url(createHmac("sha256", hmacKey()).update(`${key}:${exp}`).digest());
   const base = env.PUBLIC_API_URL.replace(/\/+$/, "");
   return `${base}/media/${key}?exp=${exp}&sig=${sig}`;
